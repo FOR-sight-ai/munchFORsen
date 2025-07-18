@@ -70,7 +70,7 @@ jobs:
         fi
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: ${{ matrix.build_path }}
@@ -95,13 +95,13 @@ jobs:
         echo "release_name=Release ${VERSION} (${SHORT_SHA})" >> $GITHUB_OUTPUT
 
     - name: Download Windows artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: proxy-windows.exe
         path: ./artifacts/
 
     - name: Download macOS artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: proxy-macos
         path: ./artifacts/
