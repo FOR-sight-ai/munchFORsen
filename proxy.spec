@@ -6,9 +6,7 @@ a = Analysis(
     ['proxy.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('logs', 'logs'),
-    ],
+    datas=[],
     hiddenimports=[
         'fastapi',
         'httpx',

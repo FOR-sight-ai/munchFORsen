@@ -10,6 +10,7 @@ from datetime import datetime
 import uuid
 import argparse
 import sys
+import platform
 
 app = FastAPI()
 
@@ -17,7 +18,21 @@ app = FastAPI()
 DEFAULT_TARGET_URL = "https://openrouter.ai/api/v1/chat/completions"
 TARGET_URL = DEFAULT_TARGET_URL
 
-LOG_DIR = "logs"
+def get_logs_directory():
+    """Get the appropriate logs directory for the current OS"""
+    system = platform.system()
+    
+    if system == "Windows":
+        # Windows: Use %USERPROFILE%\AppData\Local\Proxy\logs
+        base_dir = os.path.expanduser("~\\AppData\\Local\\Proxy")
+    else:
+        # macOS/Linux: Use ~/.local/share/proxy
+        base_dir = os.path.expanduser("~/.local/share/proxy")
+    
+    logs_dir = os.path.join(base_dir, "logs")
+    return logs_dir
+
+LOG_DIR = get_logs_directory()
 os.makedirs(LOG_DIR, exist_ok=True)
 
 async def save_request_to_file(path: str, method: str, headers: dict, body: dict):
@@ -210,18 +225,27 @@ async def main():
     parser = argparse.ArgumentParser(
         prog='proxy.py',
         description='FastAPI Proxy Server with Request Logging and Replay Capabilities',
-        epilog='''
+        epilog=f'''
 Examples:
   %(prog)s                                    # Start server with default settings
   %(prog)s server --port 9000                # Start server on port 9000
   %(prog)s server --target-url https://api.openai.com/v1/chat/completions
-  %(prog)s replay logs/20250718_191902_*.json # Replay a saved request
-  %(prog)s replay logs/request.json --output json --target-url https://test-api.com
+  %(prog)s replay <log_file_path>             # Replay a saved request
+  %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s --help                            # Show this help message
   %(prog)s server --help                     # Show server mode help
   %(prog)s replay --help                     # Show replay mode help
+
+Note: Log files are saved in: {LOG_DIR}
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # Add global option to show logs directory
+    parser.add_argument(
+        "--logs-dir", 
+        action='store_true',
+        help="Show the directory where log files are saved and exit"
     )
     
     # Create subparsers for different modes
@@ -272,11 +296,13 @@ Server Mode Examples:
         'replay', 
         help='Replay a previously saved request from log files',
         description='Replay HTTP requests from previously saved log files with detailed error reporting and timing information',
-        epilog='''
+        epilog=f'''
 Replay Mode Examples:
-  python proxy.py replay logs/20250718_191902_abc123.json    # Replay specific request
-  python proxy.py replay logs/request.json --output json     # Get JSON output
-  python proxy.py replay logs/request.json --target-url https://test-api.com  # Override target URL
+  python proxy.py replay <log_file_path>                     # Replay specific request
+  python proxy.py replay <log_file_path> --output json       # Get JSON output
+  python proxy.py replay <log_file_path> --target-url https://test-api.com  # Override target URL
+
+Log files location: {LOG_DIR}
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -306,6 +332,11 @@ Replay Mode Examples:
         sys.argv.append('server')
     
     args = parser.parse_args()
+    
+    # Handle --logs-dir option
+    if args.logs_dir:
+        print(f"Log files are saved in: {LOG_DIR}")
+        return
     
     if args.mode == 'server':
         # Server mode
