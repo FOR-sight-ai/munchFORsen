@@ -1,0 +1,47 @@
+# Configuration pour PyInstaller
+# Ce fichier peut être modifié pour personnaliser la construction
+
+[build.windows]
+# Configuration spécifique pour Windows
+icon = ""  # Chemin vers un fichier .ico (optionnel)
+console = true
+add_data = [
+    ["logs", "logs"]
+]
+
+[build.macos]
+# Configuration spécifique pour macOS
+icon = ""  # Chemin vers un fichier .icns (optionnel)
+console = true
+add_data = [
+    ["logs", "logs"]
+]
+
+[build.common]
+# Options communes à toutes les plateformes
+onefile = true
+optimize = 2
+upx = true
+excludes = [
+    "tkinter",
+    "matplotlib",
+    "numpy",
+    "scipy"
+]
+
+[dependencies]
+# Dépendances cachées nécessaires
+hiddenimports = [
+    "fastapi",
+    "httpx",
+    "uvicorn",
+    "uvicorn.lifespan",
+    "uvicorn.lifespan.on", 
+    "uvicorn.protocols",
+    "uvicorn.protocols.http",
+    "uvicorn.protocols.websockets",
+    "uvicorn.loops",
+    "uvicorn.loops.auto",
+    "pydantic",
+    "starlette"
+]

@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 logs
+
+# PyInstaller generated files
+*.manifest
+*.exe

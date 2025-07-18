@@ -1,0 +1,175 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: proxy-windows.exe
+            build_path: dist/proxy.exe
+          - os: macos-latest
+            artifact_name: proxy-macos
+            build_path: dist/proxy
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install UV
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      shell: bash
+
+    - name: Install dependencies with UV
+      run: |
+        uv sync
+        uv add pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        uv run pyinstaller proxy.spec
+
+    - name: Test executable (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        if (Test-Path "dist/proxy.exe") {
+          Write-Host "✅ Executable created successfully"
+          Get-ChildItem dist/
+          Write-Host "File size: $((Get-Item dist/proxy.exe).Length / 1MB) MB"
+        } else {
+          Write-Host "❌ Executable not found"
+          exit 1
+        }
+      shell: powershell
+
+    - name: Test executable (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        if [ -f "dist/proxy" ]; then
+          echo "✅ Executable created successfully"
+          ls -la dist/
+          file dist/proxy
+          echo "File size: $(du -h dist/proxy | cut -f1)"
+          # Make it executable
+          chmod +x dist/proxy
+        else
+          echo "❌ Executable not found"
+          exit 1
+        fi
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: ${{ matrix.build_path }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Récupérer tout l'historique pour compter les commits
+
+    - name: Get commit count and short SHA
+      id: version
+      run: |
+        COMMIT_COUNT=$(git rev-list --count HEAD)
+        SHORT_SHA=$(git rev-parse --short HEAD)
+        VERSION="v1.0.${COMMIT_COUNT}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "commit_count=${COMMIT_COUNT}" >> $GITHUB_OUTPUT
+        echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+        echo "release_name=Release ${VERSION} (${SHORT_SHA})" >> $GITHUB_OUTPUT
+
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: proxy-windows.exe
+        path: ./artifacts/
+
+    - name: Download macOS artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: proxy-macos
+        path: ./artifacts/
+
+    - name: Rename artifacts with version
+      run: |
+        mv artifacts/proxy.exe artifacts/proxy-${{ steps.version.outputs.version }}-windows.exe 2>/dev/null || true
+        mv artifacts/proxy artifacts/proxy-${{ steps.version.outputs.version }}-macos 2>/dev/null || true
+        ls -la artifacts/
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        name: ${{ steps.version.outputs.release_name }}
+        body: |
+          🚀 **Nouvelle version automatique basée sur le commit** `${{ steps.version.outputs.short_sha }}`
+          
+          ## 📥 Téléchargements
+          
+          ### Windows
+          - [📦 proxy-${{ steps.version.outputs.version }}-windows.exe](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.exe)
+          
+          ### macOS  
+          - [📦 proxy-${{ steps.version.outputs.version }}-macos](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos)
+          
+          ## 📊 Informations
+          - **Commit** : `${{ github.sha }}`
+          - **Branche** : `${{ github.ref_name }}`
+          - **Numéro de build** : `${{ steps.version.outputs.commit_count }}`
+          - **Date** : `${{ github.event.head_commit.timestamp }}`
+          
+          ## 🛠️ Utilisation
+          
+          ### Windows
+          ```cmd
+          # Télécharger et exécuter
+          curl -L -o proxy.exe https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.exe
+          proxy.exe --help
+          ```
+          
+          ### macOS
+          ```bash
+          # Télécharger et exécuter
+          curl -L -o proxy https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos
+          chmod +x proxy
+          ./proxy --help
+          ```
+          
+          ---
+          *Build automatique générée le ${{ github.event.head_commit.timestamp }}*
+        files: |
+          artifacts/proxy-${{ steps.version.outputs.version }}-windows.exe
+          artifacts/proxy-${{ steps.version.outputs.version }}-macos
+        draft: false
+        prerelease: false
+        generate_release_notes: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Clean old releases (keep last 10)
+      run: |
+        # Récupérer les releases et garder seulement les 10 dernières
+        gh release list --limit 100 --json tagName,createdAt --jq '.[10:][].tagName' | while read tag; do
+          if [ ! -z "$tag" ]; then
+            echo "Suppression de la release ancienne: $tag"
+            gh release delete "$tag" --yes || echo "Impossible de supprimer $tag"
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
