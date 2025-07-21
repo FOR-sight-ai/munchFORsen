@@ -137,13 +137,13 @@ jobs:
         ls -la artifacts/
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.version.outputs.version }}
         name: ${{ steps.version.outputs.release_name }}
         body: |
 
-          ## 📥 Dwnloads
+          ## 📥 Downloads
           
           ### Windows
           - [📦 proxy-${{ steps.version.outputs.version }}-windows.zip](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.zip)
