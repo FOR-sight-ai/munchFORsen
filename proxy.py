@@ -220,8 +220,8 @@ async def proxy(full_path: str, request: Request):
     else:
         return JSONResponse(status_code=response.status_code, content=response_json)
     
-async def main():
-    """Main function to handle both server and replay modes"""
+def parse_arguments():
+    """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         prog='proxy.py',
         description='FastAPI Proxy Server with Request Logging and Replay Capabilities',
@@ -331,7 +331,62 @@ Log files location: {LOG_DIR}
     if len(sys.argv) == 1:
         sys.argv.append('server')
     
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def run_server(args):
+    """Run the proxy server"""
+    global TARGET_URL
+    TARGET_URL = args.target_url
+    
+    print(f"Starting proxy server...")
+    print(f"Target URL: {TARGET_URL}")
+    print(f"Server will be available at: http://{args.host}:{args.port}")
+    
+    import uvicorn
+    uvicorn.run(app, host=args.host, port=args.port)
+
+async def run_replay(args):
+    """Run replay mode"""
+    print(f"Replaying request from: {args.file}")
+    print("-" * 50)
+    
+    result = await replay_request_from_file(args.file, args.target_url)
+    
+    if args.output == 'json':
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        # Pretty print format
+        if result['success']:
+            print(f"✅ Replay successful!")
+            print(f"📁 File: {result['replay_info']['file_path']}")
+            print(f"⏰ Original timestamp: {result['replay_info']['original_timestamp']}")
+            print(f"🔄 Replay timestamp: {result['replay_info']['replay_timestamp']}")
+            print(f"⚡ Response time: {result['replay_info']['response_time_seconds']:.3f}s")
+            print(f"🎯 Target URL: {result['request']['url']}")
+            print(f"📤 Method: {result['request']['method']}")
+            print(f"📥 Status Code: {result['response']['status_code']}")
+            
+            if result['response']['status_code'] == 200:
+                print("✅ Request completed successfully")
+            else:
+                print(f"⚠️  Request completed with status {result['response']['status_code']}")
+            
+            print("\n📋 Response body:")
+            print(json.dumps(result['response']['body'], indent=2, ensure_ascii=False))
+            
+        else:
+            print(f"❌ Replay failed!")
+            print(f"📁 File: {result.get('file_path', args.file)}")
+            print(f"🚨 Error: {result['error']}")
+            print(f"📝 Details: {result['details']}")
+            
+            if 'replay_info' in result:
+                print(f"⏰ Original timestamp: {result['replay_info']['original_timestamp']}")
+                print(f"🔄 Replay timestamp: {result['replay_info']['replay_timestamp']}")
+
+def main():
+    """Main function to handle both server and replay modes"""
+    args = parse_arguments()
     
     # Handle --logs-dir option
     if args.logs_dir:
@@ -339,55 +394,12 @@ Log files location: {LOG_DIR}
         return
     
     if args.mode == 'server':
-        # Server mode
-        global TARGET_URL
-        TARGET_URL = args.target_url
-        
-        print(f"Starting proxy server...")
-        print(f"Target URL: {TARGET_URL}")
-        print(f"Server will be available at: http://{args.host}:{args.port}")
-        
-        import uvicorn
-        uvicorn.run(app, host=args.host, port=args.port)
+        # Server mode - run directly without asyncio.run()
+        run_server(args)
         
     elif args.mode == 'replay':
-        # Replay mode
-        print(f"Replaying request from: {args.file}")
-        print("-" * 50)
-        
-        result = await replay_request_from_file(args.file, args.target_url)
-        
-        if args.output == 'json':
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-        else:
-            # Pretty print format
-            if result['success']:
-                print(f"✅ Replay successful!")
-                print(f"📁 File: {result['replay_info']['file_path']}")
-                print(f"⏰ Original timestamp: {result['replay_info']['original_timestamp']}")
-                print(f"🔄 Replay timestamp: {result['replay_info']['replay_timestamp']}")
-                print(f"⚡ Response time: {result['replay_info']['response_time_seconds']:.3f}s")
-                print(f"🎯 Target URL: {result['request']['url']}")
-                print(f"📤 Method: {result['request']['method']}")
-                print(f"📥 Status Code: {result['response']['status_code']}")
-                
-                if result['response']['status_code'] == 200:
-                    print("✅ Request completed successfully")
-                else:
-                    print(f"⚠️  Request completed with status {result['response']['status_code']}")
-                
-                print("\n📋 Response body:")
-                print(json.dumps(result['response']['body'], indent=2, ensure_ascii=False))
-                
-            else:
-                print(f"❌ Replay failed!")
-                print(f"📁 File: {result.get('file_path', args.file)}")
-                print(f"🚨 Error: {result['error']}")
-                print(f"📝 Details: {result['details']}")
-                
-                if 'replay_info' in result:
-                    print(f"⏰ Original timestamp: {result['replay_info']['original_timestamp']}")
-                    print(f"🔄 Replay timestamp: {result['replay_info']['replay_timestamp']}")
+        # Replay mode - use asyncio.run() for async operations
+        asyncio.run(run_replay(args))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
