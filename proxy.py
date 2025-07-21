@@ -21,6 +21,9 @@ TARGET_URL = DEFAULT_TARGET_URL
 # Global flag for content flattening
 FLATTEN_CONTENT = False
 
+# Global flag for tool role replacement
+NO_TOOL_ROLES = False
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -72,6 +75,34 @@ def flatten_content_in_body(body: dict) -> dict:
     
     return flattened_body
 
+def replace_tool_roles_in_body(body: dict) -> dict:
+    """
+    Replace "tool-call" and "tool-response" roles with "user" in messages.
+    
+    Args:
+        body: The request body dictionary
+        
+    Returns:
+        Modified body with tool roles replaced
+    """
+    if not isinstance(body, dict):
+        return body
+    
+    # Make a deep copy to avoid modifying the original
+    modified_body = copy.deepcopy(body)
+    
+    # Check if this looks like a chat completion request with messages
+    if "messages" in modified_body and isinstance(modified_body["messages"], list):
+        for message in modified_body["messages"]:
+            if isinstance(message, dict) and "role" in message:
+                role = message["role"]
+                
+                # Replace tool-call and tool-response roles with user
+                if role in ["tool-call", "tool-response"]:
+                    message["role"] = "user"
+    
+    return modified_body
+
 async def save_request_to_file(path: str, method: str, headers: dict, body: dict):
     log_entry = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -85,7 +116,7 @@ async def save_request_to_file(path: str, method: str, headers: dict, body: dict
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -113,6 +144,10 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         # Apply content flattening if requested
         if flatten_content:
             body = flatten_content_in_body(body)
+        
+        # Apply tool role replacement if requested
+        if no_tool_roles:
+            body = replace_tool_roles_in_body(body)
         
         # Filter headers - only keep essential ones
         filtered_headers = {}
@@ -237,7 +272,11 @@ async def proxy(full_path: str, request: Request):
     # Apply content flattening if enabled
     body_to_send = incoming_body
     if FLATTEN_CONTENT:
-        body_to_send = flatten_content_in_body(incoming_body)
+        body_to_send = flatten_content_in_body(body_to_send)
+    
+    # Apply tool role replacement if enabled
+    if NO_TOOL_ROLES:
+        body_to_send = replace_tool_roles_in_body(body_to_send)
 
     # Filter headers - only keep essential ones for OpenRouter API
     filtered_headers = {}
@@ -277,9 +316,11 @@ Examples:
   %(prog)s server --port 9000                # Start server on port 9000
   %(prog)s server --target-url https://api.openai.com/v1/chat/completions
   %(prog)s server --flatten-content          # Start server with content flattening enabled
+  %(prog)s server --no-tool-roles            # Start server with tool role replacement enabled
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
+  %(prog)s replay <log_file_path> --no-tool-roles    # Replay with tool role replacement
   %(prog)s --help                            # Show this help message
   %(prog)s server --help                     # Show server mode help
   %(prog)s replay --help                     # Show replay mode help
@@ -315,6 +356,7 @@ Server Mode Examples:
   python proxy.py server --host 127.0.0.1    # Bind to localhost only
   python proxy.py server --target-url https://api.openai.com/v1/chat/completions
   python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
+  python proxy.py server --no-tool-roles     # Enable tool role replacement
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -344,6 +386,11 @@ Server Mode Examples:
         action='store_true',
         help="Flatten content fields in messages: if content is a list with a single text element, replace it with just the text string"
     )
+    server_parser.add_argument(
+        "--no-tool-roles", 
+        action='store_true',
+        help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -356,6 +403,7 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --output json       # Get JSON output
   python proxy.py replay <log_file_path> --target-url https://test-api.com  # Override target URL
   python proxy.py replay <log_file_path> --flatten-content   # Enable content flattening during replay
+  python proxy.py replay <log_file_path> --no-tool-roles     # Enable tool role replacement during replay
 
 Log files location: {LOG_DIR}
         ''',
@@ -386,6 +434,11 @@ Log files location: {LOG_DIR}
         action='store_true',
         help="Flatten content fields in messages: if content is a list with a single text element, replace it with just the text string"
     )
+    replay_parser.add_argument(
+        "--no-tool-roles", 
+        action='store_true',
+        help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -395,13 +448,15 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
+    NO_TOOL_ROLES = args.no_tool_roles
     
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
+    print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -412,9 +467,11 @@ async def run_replay(args):
     print(f"Replaying request from: {args.file}")
     if args.flatten_content:
         print("Content flattening: enabled")
+    if args.no_tool_roles:
+        print("Tool role replacement: enabled")
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
