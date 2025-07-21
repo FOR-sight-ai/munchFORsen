@@ -21,8 +21,9 @@ TARGET_URL = DEFAULT_TARGET_URL
 # Global flag for content flattening
 FLATTEN_CONTENT = False
 
-# Global flag for tool role replacement
+# Global flags
 NO_TOOL_ROLES = False
+ENABLE_LOGGING = False
 
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
@@ -266,8 +267,9 @@ async def proxy(full_path: str, request: Request):
 
     incoming_headers = dict(request.headers)
 
-    # Save request to file
-    await save_request_to_file(full_path, request.method, incoming_headers, incoming_body)
+    # Save request to file if logging is enabled
+    if ENABLE_LOGGING:
+        await save_request_to_file(full_path, request.method, incoming_headers, incoming_body)
 
     # Apply content flattening if enabled
     body_to_send = incoming_body
@@ -317,6 +319,7 @@ Examples:
   %(prog)s server --target-url https://api.openai.com/v1/chat/completions
   %(prog)s server --flatten-content          # Start server with content flattening enabled
   %(prog)s server --no-tool-roles            # Start server with tool role replacement enabled
+  %(prog)s server --log                      # Start server with request logging enabled
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
@@ -357,6 +360,7 @@ Server Mode Examples:
   python proxy.py server --target-url https://api.openai.com/v1/chat/completions
   python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
   python proxy.py server --no-tool-roles     # Enable tool role replacement
+  python proxy.py server --log               # Enable request logging
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -390,6 +394,11 @@ Server Mode Examples:
         "--no-tool-roles", 
         action='store_true',
         help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
+    )
+    server_parser.add_argument(
+        "--log", 
+        action='store_true',
+        help="Enable request logging to files (disabled by default)"
     )
     
     # Replay mode
@@ -448,15 +457,17 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
+    ENABLE_LOGGING = args.log
     
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
+    print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
