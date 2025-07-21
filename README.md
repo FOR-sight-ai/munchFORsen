@@ -12,6 +12,7 @@ A simple FastAPI proxy server for calling LLMs with HTTP request logging and rep
 - Automatic request logging
 - Request replay from logs
 - Support for header and target URL modification
+- Content flattening for single-text message arrays
 
 ## Installation
 
@@ -61,11 +62,64 @@ The executable will be created in the `dist/` folder.
 ### Start the server
 
 ```bash
-# With Python
-uv run uvicorn proxy:app --host 0.0.0.0 --port 8000
+# Basic usage
+python proxy.py server
+
+# With custom options
+python proxy.py server --port 9000 --host 127.0.0.1
+
+# Enable content flattening (converts single-text content arrays to strings)
+python proxy.py server --flatten-content
 
 # With the executable
-./dist/proxy --host 0.0.0.0 --port 8000
+./dist/proxy server --host 0.0.0.0 --port 8000
+```
+
+### Content Flattening
+
+The `--flatten-content` option automatically converts message content from array format to string format when the array contains only a single text element. This is useful for APIs that expect simplified content structures.
+
+**Example transformation:**
+```json
+// Before flattening
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello, world!"
+        }
+      ]
+    }
+  ]
+}
+
+// After flattening
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello, world!"
+    }
+  ]
+}
+```
+
+**Note:** Only single-element arrays with `type: "text"` are flattened. Multi-element arrays and other content types remain unchanged.
+
+### Replay Requests
+
+```bash
+# Replay a saved request
+python proxy.py replay <log_file_path>
+
+# Replay with content flattening
+python proxy.py replay <log_file_path> --flatten-content
+
+# Replay to a different endpoint
+python proxy.py replay <log_file_path> --target-url https://api.openai.com/v1/chat/completions
 ```
 
 
