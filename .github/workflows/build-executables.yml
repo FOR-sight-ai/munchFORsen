@@ -13,10 +13,10 @@ jobs:
         include:
           - os: windows-latest
             artifact_name: proxy-windows.zip
-            build_path: dist/proxy.exe
+            build_path: dist/proxy.zip
           - os: macos-latest
             artifact_name: proxy-macos.zip
-            build_path: dist/proxy
+            build_path: dist/proxy-macos.zip
 
     steps:
     - uses: actions/checkout@v4
@@ -87,13 +87,13 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: |
         cd dist
-        zip proxy.zip proxy
+        zip proxy-macos.zip proxy
       
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: dist/proxy.zip
+        path: ${{ matrix.build_path }}
 
   release:
     needs: build
@@ -129,7 +129,7 @@ jobs:
     - name: Rename artifacts with version
       run: |
         mv artifacts/proxy.zip artifacts/proxy-${{ steps.version.outputs.version }}-windows.zip 2>/dev/null || true
-        mv artifacts/proxy.zip artifacts/proxy-${{ steps.version.outputs.version }}-macos.zip 2>/dev/null || true
+        mv artifacts/proxy-macos.zip artifacts/proxy-${{ steps.version.outputs.version }}-macos.zip 2>/dev/null || true
         ls -la artifacts/
 
     - name: Create Release
@@ -146,25 +146,6 @@ jobs:
           
           ### macOS  
           - [📦 proxy-${{ steps.version.outputs.version }}-macos.zip](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos.zip)
-          
-          ## 📊 Informations
-          - **Commit** : `${{ github.sha }}`
-          - **Date** : `${{ github.event.head_commit.timestamp }}`
-          
-          ## 🛠️ Utilisation
-          
-          ### Windows
-          ```cmd
-          curl -L -o proxy.exe https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.exe
-          proxy.exe --help
-          ```
-          
-          ### macOS
-          ```bash
-          curl -L -o proxy https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos
-          chmod +x proxy
-          ./proxy --help
-          ```
           
           ---
           
