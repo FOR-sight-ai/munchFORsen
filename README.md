@@ -183,15 +183,6 @@ The `--no-tool-roles` option replaces "tool-call" and "tool-response" roles with
 
 The `--merge-header` option allows you to load headers from a JSON file and merge them with each request. This is particularly useful for adding API keys and authentication headers without hardcoding them in your application.
 
-**Example JSON file (`headers.json`):**
-```json
-{
-  "Ocp-Apim-Subscription-Key": "your-subscription-key-here",
-  "Authorization": "Bearer your-api-token-here",
-  "TrustNest-Apim-Subscription-Key": "your-trustnest-key-here"
-}
-```
-
 **Usage:**
 ```bash
 # Start server with header merging
