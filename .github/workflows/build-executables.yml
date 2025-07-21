@@ -12,10 +12,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: proxy-windows.exe
+            artifact_name: proxy-windows.zip
             build_path: dist/proxy.exe
           - os: macos-latest
-            artifact_name: proxy-macos
+            artifact_name: proxy-macos.zip
             build_path: dist/proxy
 
     steps:
@@ -76,12 +76,24 @@ jobs:
           echo "❌ Executable not found"
           exit 1
         fi
+        
+    - name: Zip executable (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        Compress-Archive -Path dist/proxy.exe -DestinationPath dist/proxy.zip
+      shell: powershell
 
+    - name: Zip executable (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        cd dist
+        zip proxy.zip proxy
+      
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: ${{ matrix.build_path }}
+        path: dist/proxy.zip
 
   release:
     needs: build
@@ -105,19 +117,19 @@ jobs:
     - name: Download Windows artifact
       uses: actions/download-artifact@v4
       with:
-        name: proxy-windows.exe
+        name: proxy-windows.zip
         path: ./artifacts/
 
     - name: Download macOS artifact
       uses: actions/download-artifact@v4
       with:
-        name: proxy-macos
+        name: proxy-macos.zip
         path: ./artifacts/
 
     - name: Rename artifacts with version
       run: |
-        mv artifacts/proxy.exe artifacts/proxy-${{ steps.version.outputs.version }}-windows.exe 2>/dev/null || true
-        mv artifacts/proxy artifacts/proxy-${{ steps.version.outputs.version }}-macos 2>/dev/null || true
+        mv artifacts/proxy.zip artifacts/proxy-${{ steps.version.outputs.version }}-windows.zip 2>/dev/null || true
+        mv artifacts/proxy.zip artifacts/proxy-${{ steps.version.outputs.version }}-macos.zip 2>/dev/null || true
         ls -la artifacts/
 
     - name: Create Release
@@ -126,44 +138,39 @@ jobs:
         tag_name: ${{ steps.version.outputs.version }}
         name: ${{ steps.version.outputs.release_name }}
         body: |
-          🚀 **Nouvelle version automatique basée sur le commit** `${{ steps.version.outputs.short_sha }}`
-          
-          ## 📥 Téléchargements
+
+          ## 📥 Dwnloads
           
           ### Windows
-          - [📦 proxy-${{ steps.version.outputs.version }}-windows.exe](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.exe)
+          - [📦 proxy-${{ steps.version.outputs.version }}-windows.zip](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.zip)
           
           ### macOS  
-          - [📦 proxy-${{ steps.version.outputs.version }}-macos](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos)
+          - [📦 proxy-${{ steps.version.outputs.version }}-macos.zip](../../releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos.zip)
           
           ## 📊 Informations
           - **Commit** : `${{ github.sha }}`
-          - **Branche** : `${{ github.ref_name }}`
-          - **Numéro de build** : `${{ steps.version.outputs.commit_count }}`
           - **Date** : `${{ github.event.head_commit.timestamp }}`
           
           ## 🛠️ Utilisation
           
           ### Windows
           ```cmd
-          # Télécharger et exécuter
           curl -L -o proxy.exe https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-windows.exe
           proxy.exe --help
           ```
           
           ### macOS
           ```bash
-          # Télécharger et exécuter
           curl -L -o proxy https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/proxy-${{ steps.version.outputs.version }}-macos
           chmod +x proxy
           ./proxy --help
           ```
           
           ---
-          *Build automatique générée le ${{ github.event.head_commit.timestamp }}*
+          
         files: |
-          artifacts/proxy-${{ steps.version.outputs.version }}-windows.exe
-          artifacts/proxy-${{ steps.version.outputs.version }}-macos
+          artifacts/proxy-${{ steps.version.outputs.version }}-windows.zip
+          artifacts/proxy-${{ steps.version.outputs.version }}-macos.zip
         draft: false
         prerelease: false
         generate_release_notes: false
