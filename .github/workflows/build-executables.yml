@@ -80,14 +80,18 @@ jobs:
     - name: Zip executable (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        Compress-Archive -Path dist/proxy.exe -DestinationPath dist/proxy.zip
+        Copy-Item README.md -Destination dist/
+        Copy-Item LICENSE -Destination dist/
+        Compress-Archive -Path dist/proxy.exe, dist/README.md, dist/LICENSE -DestinationPath dist/proxy.zip
       shell: powershell
 
     - name: Zip executable (macOS)
       if: matrix.os == 'macos-latest'
       run: |
+        cp README.md dist/
+        cp LICENSE dist/
         cd dist
-        zip proxy-macos.zip proxy
+        zip proxy-macos.zip proxy README.md LICENSE
       
     - name: Upload artifact
       uses: actions/upload-artifact@v4
