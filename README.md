@@ -12,6 +12,7 @@ A simple FastAPI proxy server for calling LLMs with HTTP request logging and rep
 - Optional request logging (disabled by default)
 - Request replay from logs
 - Support for header and target URL modification
+- Header merging from JSON files (for API keys and authentication)
 - Content flattening for single-text message arrays
 - Tool role replacement for compatibility with different LLM providers
 
@@ -80,6 +81,9 @@ python proxy.py server --no-tool-roles
 
 # Enable request logging (disabled by default)
 python proxy.py server --log
+
+# Merge headers from JSON file (for API keys and authentication)
+python proxy.py server --merge-header headers.json
 
 # With the executable
 ./dist/proxy server --host 0.0.0.0 --port 8000
@@ -175,6 +179,27 @@ The `--no-tool-roles` option replaces "tool-call" and "tool-response" roles with
 }
 ```
 
+### Header Merging
+
+The `--merge-header` option allows you to load headers from a JSON file and merge them with each request. This is particularly useful for adding API keys and authentication headers without hardcoding them in your application.
+
+**Usage:**
+```bash
+# Start server with header merging
+python proxy.py server --merge-header headers.json
+
+# Replay with header merging
+python proxy.py replay log_file.json --merge-header headers.json
+```
+
+**Behavior:**
+- Headers from the JSON file are merged with incoming request headers
+- If a header already exists in the request, it will be replaced by the one from the file (case-insensitive matching)
+- The header names from the JSON file are preserved exactly as written
+- All header keys and values must be strings
+
+**Security Note:** Keep your header files secure as they may contain sensitive API keys and tokens. Consider using environment variables or secure storage for production deployments.
+
 ### Replay Requests
 
 ```bash
@@ -183,6 +208,9 @@ python proxy.py replay <log_file_path>
 
 # Replay with content flattening
 python proxy.py replay <log_file_path> --flatten-content
+
+# Replay with header merging
+python proxy.py replay <log_file_path> --merge-header headers.json
 
 # Replay to a different endpoint
 python proxy.py replay <log_file_path> --target-url https://api.openai.com/v1/chat/completions
