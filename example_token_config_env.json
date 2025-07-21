@@ -1,0 +1,14 @@
+{
+  "url": "$TOKEN_ENDPOINT",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "data": {
+    "grant_type": "client_credentials",
+    "client_id": "$SP_CLIENT_ID",
+    "client_secret": "$SP_CLIENT_SECRET",
+    "scope": "$OAUTH_SCOPE"
+  },
+  "token_field": "access_token"
+}

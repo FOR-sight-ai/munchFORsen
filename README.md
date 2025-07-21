@@ -13,6 +13,7 @@ A simple FastAPI proxy server for calling LLMs with HTTP request logging and rep
 - Request replay from logs
 - Support for header and target URL modification
 - Header merging from JSON files (for API keys and authentication)
+- Automatic token request for OAuth2 and similar authentication flows
 - Content flattening for single-text message arrays
 - Tool role replacement for compatibility with different LLM providers
 
@@ -84,6 +85,9 @@ python proxy.py server --log
 
 # Merge headers from JSON file (for API keys and authentication)
 python proxy.py server --merge-header headers.json
+
+# Enable automatic token request for OAuth2 authentication
+python proxy.py server --token-request token_config.json
 
 # With the executable
 ./dist/proxy server --host 0.0.0.0 --port 8000
@@ -200,6 +204,64 @@ python proxy.py replay log_file.json --merge-header headers.json
 
 **Security Note:** Keep your header files secure as they may contain sensitive API keys and tokens. Consider using environment variables or secure storage for production deployments.
 
+### Token Request (OAuth2 Authentication)
+
+The `--token-request` option enables automatic token acquisition for APIs that require OAuth2 or similar token-based authentication. Before each proxied request, the server will automatically obtain a fresh token and add it to the `Authorization` header as `Bearer {token}`.
+
+**Usage:**
+```bash
+# Start server with token request enabled
+python proxy.py server --token-request token_config.json
+
+# Replay with token request enabled
+python proxy.py replay log_file.json --token-request token_config.json
+```
+
+**Configuration File Format:**
+Create a JSON file with your token request parameters:
+
+```json
+{
+  "url": "https://auth.example.com/oauth/token",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "data": {
+    "grant_type": "client_credentials",
+    "client_id": "your_client_id_here",
+    "client_secret": "your_client_secret_here",
+    "scope": "api:read api:write"
+  },
+  "token_field": "access_token"
+}
+```
+
+**Configuration Fields:**
+- `url` (required): Token endpoint URL
+- `method` (optional): HTTP method, defaults to "POST"
+- `headers` (optional): Headers for the token request
+- `data` (optional): Request data (form data for POST requests)
+- `token_field` (optional): Response field containing the token, defaults to "access_token"
+
+**Example curl equivalent:**
+```bash
+curl -X POST \
+     -H "Content-Type: application/x-www-form-urlencoded" \
+     -d "grant_type=client_credentials" \
+     -d "client_id=your_client_id_here" \
+     -d "client_secret=your_client_secret_here" \
+     -d "scope=api:read api:write" \
+     "https://auth.example.com/oauth/token"
+```
+
+**Behavior:**
+- A fresh token is requested before each proxied request
+- The obtained token replaces any existing `Authorization` header
+- If token request fails, the proxy returns a 500 error with details
+
+**Security Note:** Keep your token configuration files secure as they contain sensitive credentials. Consider using environment variables for production deployments.
+
 ### Replay Requests
 
 ```bash
@@ -211,6 +273,9 @@ python proxy.py replay <log_file_path> --flatten-content
 
 # Replay with header merging
 python proxy.py replay <log_file_path> --merge-header headers.json
+
+# Replay with token request
+python proxy.py replay <log_file_path> --token-request token_config.json
 
 # Replay to a different endpoint
 python proxy.py replay <log_file_path> --target-url https://api.openai.com/v1/chat/completions

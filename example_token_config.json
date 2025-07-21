@@ -1,0 +1,14 @@
+{
+  "url": "https://your-token-endpoint.com/oauth/token",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "data": {
+    "grant_type": "client_credentials",
+    "client_id": "your_client_id_here",
+    "client_secret": "your_client_secret_here",
+    "scope": "api:read api:write"
+  },
+  "token_field": "access_token"
+}

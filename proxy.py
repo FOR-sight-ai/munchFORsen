@@ -28,6 +28,9 @@ ENABLE_LOGGING = False
 # Global headers to merge from file
 MERGE_HEADERS = {}
 
+# Global token request configuration
+TOKEN_REQUEST_CONFIG = None
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -79,6 +82,116 @@ def load_merge_headers(file_path: str) -> dict:
     
     except json.JSONDecodeError as e:
         raise json.JSONDecodeError(f"Invalid JSON in header file {file_path}: {e.msg}", e.doc, e.pos)
+
+def load_token_request_config(file_path: str) -> dict:
+    """
+    Load token request configuration from a JSON file.
+    
+    Args:
+        file_path: Path to the JSON file containing token request parameters
+        
+    Returns:
+        Dictionary containing token request configuration
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file contains invalid JSON
+        ValueError: If the file doesn't contain required fields
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Token request config file not found: {file_path}")
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        if not isinstance(config, dict):
+            raise ValueError("Token request config file must contain a JSON object (dictionary)")
+        
+        # Validate required fields
+        if 'url' not in config:
+            raise ValueError("Token request config must contain 'url' field")
+        
+        # Set defaults for optional fields
+        config.setdefault('method', 'POST')
+        config.setdefault('headers', {})
+        config.setdefault('data', {})
+        config.setdefault('token_field', 'access_token')  # Default field name for token in response
+        
+        return config
+    
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in token request config file {file_path}: {e.msg}", e.doc, e.pos)
+
+async def request_token(config: dict) -> str:
+    """
+    Make a token request using the provided configuration.
+    
+    Args:
+        config: Dictionary containing token request configuration
+        
+    Returns:
+        The access token string
+        
+    Raises:
+        Exception: If token request fails or token is not found in response
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Prepare request parameters
+            method = config.get('method', 'POST').upper()
+            url = config['url']
+            headers = config.get('headers', {})
+            data = config.get('data', {})
+            
+            # Make the request
+            if method == 'POST':
+                # For OAuth2 token requests, typically use form data
+                if 'Content-Type' not in headers and 'content-type' not in headers:
+                    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                
+                if headers.get('Content-Type', '').startswith('application/x-www-form-urlencoded'):
+                    response = await client.post(url, data=data, headers=headers)
+                else:
+                    response = await client.post(url, json=data, headers=headers)
+            elif method == 'GET':
+                response = await client.get(url, params=data, headers=headers)
+            else:
+                response = await client.request(method, url, json=data, headers=headers)
+            
+            # Check if request was successful
+            if response.status_code != 200:
+                raise Exception(f"Token request failed with status {response.status_code}: {response.text}")
+            
+            # Parse response
+            try:
+                response_data = response.json()
+            except Exception:
+                raise Exception(f"Token response is not valid JSON: {response.text}")
+            
+            # Extract token from response
+            token_field = config.get('token_field', 'access_token')
+            if token_field not in response_data:
+                raise Exception(f"Token field '{token_field}' not found in response. Available fields: {list(response_data.keys())}")
+            
+            token = response_data[token_field]
+            if not token:
+                raise Exception(f"Token field '{token_field}' is empty in response")
+            
+            # If token is a complex object, try to convert it to JSON string
+            if isinstance(token, (dict, list)):
+                return json.dumps(token)
+            
+            return str(token)
+            
+    except httpx.TimeoutException as e:
+        raise Exception(f"Token request timeout: {e}")
+    except httpx.RequestError as e:
+        raise Exception(f"Token request error: {e}")
+    except Exception as e:
+        if "Token request failed" in str(e) or "Token field" in str(e) or "Token response" in str(e):
+            raise  # Re-raise our custom exceptions
+        raise Exception(f"Unexpected error during token request: {e}")
 
 def merge_headers_with_request(request_headers: dict, merge_headers: dict) -> dict:
     """
@@ -186,7 +299,7 @@ async def save_request_to_file(path: str, method: str, headers: dict, body: dict
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, merge_headers: dict = None):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, merge_headers: dict = None, token_request_config: dict = None):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -236,6 +349,27 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         for header_name, header_value in headers.items():
             if header_name.lower() in essential_headers:
                 filtered_headers[header_name] = header_value
+        
+        # Request token if configured
+        if token_request_config:
+            try:
+                token = await request_token(token_request_config)
+                # Replace any existing authorization header with the new token
+                # Remove existing authorization headers (case-insensitive)
+                filtered_headers = {k: v for k, v in filtered_headers.items() if k.lower() != 'authorization'}
+                # Add the new authorization header
+                filtered_headers['Authorization'] = f"Bearer {token}"
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": "Token request failed",
+                    "details": str(e),
+                    "replay_info": {
+                        "original_timestamp": original_timestamp,
+                        "replay_timestamp": datetime.utcnow().isoformat(),
+                        "file_path": filepath
+                    }
+                }
         
         # Perform the request
         start_time = datetime.utcnow()
@@ -372,6 +506,18 @@ async def proxy(full_path: str, request: Request):
         if header_name.lower() in essential_headers:
             filtered_headers[header_name] = header_value
 
+    # Request token if configured
+    if TOKEN_REQUEST_CONFIG:
+        try:
+            token = await request_token(TOKEN_REQUEST_CONFIG)
+            # Replace any existing authorization header with the new token
+            # Remove existing authorization headers (case-insensitive)
+            filtered_headers = {k: v for k, v in filtered_headers.items() if k.lower() != 'authorization'}
+            # Add the new authorization header
+            filtered_headers['Authorization'] = f"Bearer {token}"
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": f"Token request failed: {str(e)}"})
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
 
@@ -400,6 +546,7 @@ Examples:
   %(prog)s server --no-tool-roles            # Start server with tool role replacement enabled
   %(prog)s server --log                      # Start server with request logging enabled
   %(prog)s server --merge-header headers.json # Start server with header merging from JSON file
+  %(prog)s server --token-request token.json  # Start server with token request enabled
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
@@ -442,6 +589,7 @@ Server Mode Examples:
   python proxy.py server --no-tool-roles     # Enable tool role replacement
   python proxy.py server --log               # Enable request logging
   python proxy.py server --merge-header headers.json  # Merge headers from JSON file
+  python proxy.py server --token-request token.json   # Enable token request
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -487,6 +635,12 @@ Server Mode Examples:
         help="Path to JSON file containing headers to merge with each request. Headers from file will replace existing headers if they have the same name (case-insensitive). Example: --merge-header headers.json",
         metavar='FILE'
     )
+    server_parser.add_argument(
+        "--token-request", 
+        type=str,
+        help="Path to JSON file containing parameters for making a token request. The obtained token will be used in Authorization header as 'Bearer {token}', replacing any existing authorization. Example: --token-request token_config.json",
+        metavar='FILE'
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -501,6 +655,7 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --flatten-content   # Enable content flattening during replay
   python proxy.py replay <log_file_path> --no-tool-roles     # Enable tool role replacement during replay
   python proxy.py replay <log_file_path> --merge-header headers.json  # Merge headers from JSON file during replay
+  python proxy.py replay <log_file_path> --token-request token.json   # Enable token request during replay
 
 Log files location: {LOG_DIR}
         ''',
@@ -542,6 +697,12 @@ Log files location: {LOG_DIR}
         help="Path to JSON file containing headers to merge with the replayed request. Headers from file will replace existing headers if they have the same name (case-insensitive). Example: --merge-header headers.json",
         metavar='FILE'
     )
+    replay_parser.add_argument(
+        "--token-request", 
+        type=str,
+        help="Path to JSON file containing parameters for making a token request. The obtained token will be used in Authorization header as 'Bearer {token}', replacing any existing authorization. Example: --token-request token_config.json",
+        metavar='FILE'
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -551,7 +712,7 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
@@ -568,12 +729,25 @@ def run_server(args):
             print(f"Error loading merge headers from {args.merge_header}: {e}")
             sys.exit(1)
     
+    # Load token request configuration if specified
+    if hasattr(args, 'token_request') and args.token_request:
+        try:
+            TOKEN_REQUEST_CONFIG = load_token_request_config(args.token_request)
+            print(f"Loaded token request configuration from: {args.token_request}")
+            print(f"  - Token endpoint: {TOKEN_REQUEST_CONFIG['url']}")
+            print(f"  - Method: {TOKEN_REQUEST_CONFIG.get('method', 'POST')}")
+            print(f"  - Token field: {TOKEN_REQUEST_CONFIG.get('token_field', 'access_token')}")
+        except Exception as e:
+            print(f"Error loading token request configuration from {args.token_request}: {e}")
+            sys.exit(1)
+    
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
     print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
     print(f"Header merging: {'enabled' if MERGE_HEADERS else 'disabled'}")
+    print(f"Token request: {'enabled' if TOKEN_REQUEST_CONFIG else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -599,9 +773,19 @@ async def run_replay(args):
             print(f"Error loading merge headers from {args.merge_header}: {e}")
             return
     
+    # Load token request configuration if specified
+    token_request_config = None
+    if hasattr(args, 'token_request') and args.token_request:
+        try:
+            token_request_config = load_token_request_config(args.token_request)
+            print(f"Token request: enabled (endpoint: {token_request_config['url']})")
+        except Exception as e:
+            print(f"Error loading token request configuration from {args.token_request}: {e}")
+            return
+    
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, merge_headers)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, merge_headers, token_request_config)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
