@@ -25,6 +25,9 @@ FLATTEN_CONTENT = False
 NO_TOOL_ROLES = False
 ENABLE_LOGGING = False
 
+# Global headers to merge from file
+MERGE_HEADERS = {}
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -41,6 +44,72 @@ def get_logs_directory():
 
 LOG_DIR = get_logs_directory()
 os.makedirs(LOG_DIR, exist_ok=True)
+
+def load_merge_headers(file_path: str) -> dict:
+    """
+    Load headers from a JSON file to merge with requests.
+    
+    Args:
+        file_path: Path to the JSON file containing headers
+        
+    Returns:
+        Dictionary of headers to merge
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file contains invalid JSON
+        ValueError: If the file doesn't contain a valid header dictionary
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Header file not found: {file_path}")
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            headers = json.load(f)
+        
+        if not isinstance(headers, dict):
+            raise ValueError("Header file must contain a JSON object (dictionary)")
+        
+        # Validate that all values are strings (header values must be strings)
+        for key, value in headers.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError(f"All header keys and values must be strings. Invalid entry: {key}: {value}")
+        
+        return headers
+    
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in header file {file_path}: {e.msg}", e.doc, e.pos)
+
+def merge_headers_with_request(request_headers: dict, merge_headers: dict) -> dict:
+    """
+    Merge headers from file with request headers, replacing existing ones.
+    
+    Args:
+        request_headers: Original headers from the request
+        merge_headers: Headers to merge from file
+        
+    Returns:
+        Dictionary with merged headers (merge_headers take precedence)
+    """
+    # Start with a copy of request headers
+    merged = dict(request_headers)
+    
+    # Add/replace with headers from file (case-insensitive matching)
+    for merge_key, merge_value in merge_headers.items():
+        # Check if header already exists (case-insensitive)
+        existing_key = None
+        for req_key in merged.keys():
+            if req_key.lower() == merge_key.lower():
+                existing_key = req_key
+                break
+        
+        # Remove existing header if found, then add the new one
+        if existing_key:
+            del merged[existing_key]
+        
+        merged[merge_key] = merge_value
+    
+    return merged
 
 def flatten_content_in_body(body: dict) -> dict:
     """
@@ -117,7 +186,7 @@ async def save_request_to_file(path: str, method: str, headers: dict, body: dict
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, merge_headers: dict = None):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -150,13 +219,18 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         if no_tool_roles:
             body = replace_tool_roles_in_body(body)
         
+        # Merge headers from file if provided
+        if merge_headers:
+            headers = merge_headers_with_request(headers, merge_headers)
+        
         # Filter headers - only keep essential ones
         filtered_headers = {}
         essential_headers = {
             'authorization', 'content-type', 'accept', 'user-agent',
             'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os',
             'x-stainless-arch', 'x-stainless-runtime', 'x-stainless-runtime-version',
-            'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout'
+            'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout',
+            'ocp-apim-subscription-key', 'trustnest-apim-subscription-key'
         }
         
         for header_name, header_value in headers.items():
@@ -267,6 +341,10 @@ async def proxy(full_path: str, request: Request):
 
     incoming_headers = dict(request.headers)
 
+    # Merge headers from file if configured
+    if MERGE_HEADERS:
+        incoming_headers = merge_headers_with_request(incoming_headers, MERGE_HEADERS)
+
     # Save request to file if logging is enabled
     if ENABLE_LOGGING:
         await save_request_to_file(full_path, request.method, incoming_headers, incoming_body)
@@ -286,7 +364,8 @@ async def proxy(full_path: str, request: Request):
         'authorization', 'content-type', 'accept', 'user-agent',
         'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os',
         'x-stainless-arch', 'x-stainless-runtime', 'x-stainless-runtime-version',
-        'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout'
+        'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout',
+        'ocp-apim-subscription-key', 'trustnest-apim-subscription-key'
     }
     
     for header_name, header_value in incoming_headers.items():
@@ -320,6 +399,7 @@ Examples:
   %(prog)s server --flatten-content          # Start server with content flattening enabled
   %(prog)s server --no-tool-roles            # Start server with tool role replacement enabled
   %(prog)s server --log                      # Start server with request logging enabled
+  %(prog)s server --merge-header headers.json # Start server with header merging from JSON file
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
@@ -361,6 +441,7 @@ Server Mode Examples:
   python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
   python proxy.py server --no-tool-roles     # Enable tool role replacement
   python proxy.py server --log               # Enable request logging
+  python proxy.py server --merge-header headers.json  # Merge headers from JSON file
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -400,6 +481,12 @@ Server Mode Examples:
         action='store_true',
         help="Enable request logging to files (disabled by default)"
     )
+    server_parser.add_argument(
+        "--merge-header", 
+        type=str,
+        help="Path to JSON file containing headers to merge with each request. Headers from file will replace existing headers if they have the same name (case-insensitive). Example: --merge-header headers.json",
+        metavar='FILE'
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -413,6 +500,7 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --target-url https://test-api.com  # Override target URL
   python proxy.py replay <log_file_path> --flatten-content   # Enable content flattening during replay
   python proxy.py replay <log_file_path> --no-tool-roles     # Enable tool role replacement during replay
+  python proxy.py replay <log_file_path> --merge-header headers.json  # Merge headers from JSON file during replay
 
 Log files location: {LOG_DIR}
         ''',
@@ -448,6 +536,12 @@ Log files location: {LOG_DIR}
         action='store_true',
         help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
     )
+    replay_parser.add_argument(
+        "--merge-header", 
+        type=str,
+        help="Path to JSON file containing headers to merge with the replayed request. Headers from file will replace existing headers if they have the same name (case-insensitive). Example: --merge-header headers.json",
+        metavar='FILE'
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -457,17 +551,29 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
     ENABLE_LOGGING = args.log
+    
+    # Load merge headers if specified
+    if hasattr(args, 'merge_header') and args.merge_header:
+        try:
+            MERGE_HEADERS = load_merge_headers(args.merge_header)
+            print(f"Loaded {len(MERGE_HEADERS)} headers from: {args.merge_header}")
+            for header_name in MERGE_HEADERS.keys():
+                print(f"  - {header_name}")
+        except Exception as e:
+            print(f"Error loading merge headers from {args.merge_header}: {e}")
+            sys.exit(1)
     
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
     print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
+    print(f"Header merging: {'enabled' if MERGE_HEADERS else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -480,9 +586,22 @@ async def run_replay(args):
         print("Content flattening: enabled")
     if args.no_tool_roles:
         print("Tool role replacement: enabled")
+    
+    # Load merge headers if specified
+    merge_headers = None
+    if hasattr(args, 'merge_header') and args.merge_header:
+        try:
+            merge_headers = load_merge_headers(args.merge_header)
+            print(f"Header merging: enabled ({len(merge_headers)} headers from {args.merge_header})")
+            for header_name in merge_headers.keys():
+                print(f"  - {header_name}")
+        except Exception as e:
+            print(f"Error loading merge headers from {args.merge_header}: {e}")
+            return
+    
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, merge_headers)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
