@@ -18,6 +18,9 @@ app = FastAPI()
 DEFAULT_TARGET_URL = "https://openrouter.ai/api/v1/chat/completions"
 TARGET_URL = DEFAULT_TARGET_URL
 
+# Global flag for content flattening
+FLATTEN_CONTENT = False
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -35,6 +38,40 @@ def get_logs_directory():
 LOG_DIR = get_logs_directory()
 os.makedirs(LOG_DIR, exist_ok=True)
 
+def flatten_content_in_body(body: dict) -> dict:
+    """
+    Flatten content fields in messages if they are lists with single text elements.
+    
+    Args:
+        body: The request body dictionary
+        
+    Returns:
+        Modified body with flattened content fields
+    """
+    if not isinstance(body, dict):
+        return body
+    
+    # Make a deep copy to avoid modifying the original
+    flattened_body = copy.deepcopy(body)
+    
+    # Check if this looks like a chat completion request with messages
+    if "messages" in flattened_body and isinstance(flattened_body["messages"], list):
+        for message in flattened_body["messages"]:
+            if isinstance(message, dict) and "content" in message:
+                content = message["content"]
+                
+                # Check if content is a list with exactly one element
+                if (isinstance(content, list) and 
+                    len(content) == 1 and 
+                    isinstance(content[0], dict) and 
+                    content[0].get("type") == "text" and 
+                    "text" in content[0]):
+                    
+                    # Replace the content with just the text value
+                    message["content"] = content[0]["text"]
+    
+    return flattened_body
+
 async def save_request_to_file(path: str, method: str, headers: dict, body: dict):
     log_entry = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -48,7 +85,7 @@ async def save_request_to_file(path: str, method: str, headers: dict, body: dict
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -72,6 +109,10 @@ async def replay_request_from_file(filepath: str, target_url: str = None):
         
         # Use provided target URL or default
         url_to_use = target_url or TARGET_URL
+        
+        # Apply content flattening if requested
+        if flatten_content:
+            body = flatten_content_in_body(body)
         
         # Filter headers - only keep essential ones
         filtered_headers = {}
@@ -193,6 +234,11 @@ async def proxy(full_path: str, request: Request):
     # Save request to file
     await save_request_to_file(full_path, request.method, incoming_headers, incoming_body)
 
+    # Apply content flattening if enabled
+    body_to_send = incoming_body
+    if FLATTEN_CONTENT:
+        body_to_send = flatten_content_in_body(incoming_body)
+
     # Filter headers - only keep essential ones for OpenRouter API
     filtered_headers = {}
     essential_headers = {
@@ -207,7 +253,7 @@ async def proxy(full_path: str, request: Request):
             filtered_headers[header_name] = header_value
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(TARGET_URL, json=incoming_body, headers=filtered_headers)
+        response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
 
     try:
         response_json = response.json()
@@ -230,8 +276,10 @@ Examples:
   %(prog)s                                    # Start server with default settings
   %(prog)s server --port 9000                # Start server on port 9000
   %(prog)s server --target-url https://api.openai.com/v1/chat/completions
+  %(prog)s server --flatten-content          # Start server with content flattening enabled
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
+  %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
   %(prog)s --help                            # Show this help message
   %(prog)s server --help                     # Show server mode help
   %(prog)s replay --help                     # Show replay mode help
@@ -266,6 +314,7 @@ Server Mode Examples:
   python proxy.py server --port 9000         # Start on port 9000
   python proxy.py server --host 127.0.0.1    # Bind to localhost only
   python proxy.py server --target-url https://api.openai.com/v1/chat/completions
+  python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -290,6 +339,11 @@ Server Mode Examples:
         help="Port number to run the server on (default: 8000)",
         metavar='PORT'
     )
+    server_parser.add_argument(
+        "--flatten-content", 
+        action='store_true',
+        help="Flatten content fields in messages: if content is a list with a single text element, replace it with just the text string"
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -301,6 +355,7 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path>                     # Replay specific request
   python proxy.py replay <log_file_path> --output json       # Get JSON output
   python proxy.py replay <log_file_path> --target-url https://test-api.com  # Override target URL
+  python proxy.py replay <log_file_path> --flatten-content   # Enable content flattening during replay
 
 Log files location: {LOG_DIR}
         ''',
@@ -326,6 +381,11 @@ Log files location: {LOG_DIR}
         help="Output format: 'pretty' for human-readable format with emojis and formatting, 'json' for raw JSON output suitable for parsing (default: pretty)",
         metavar='FORMAT'
     )
+    replay_parser.add_argument(
+        "--flatten-content", 
+        action='store_true',
+        help="Flatten content fields in messages: if content is a list with a single text element, replace it with just the text string"
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -335,11 +395,13 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL
+    global TARGET_URL, FLATTEN_CONTENT
     TARGET_URL = args.target_url
+    FLATTEN_CONTENT = args.flatten_content
     
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
+    print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -348,9 +410,11 @@ def run_server(args):
 async def run_replay(args):
     """Run replay mode"""
     print(f"Replaying request from: {args.file}")
+    if args.flatten_content:
+        print("Content flattening: enabled")
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
