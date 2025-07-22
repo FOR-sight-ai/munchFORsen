@@ -65,7 +65,7 @@ def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
     client_kwargs = {"timeout": timeout}
     
     if PROXY_URL:
-        client_kwargs["proxies"] = PROXY_URL
+        client_kwargs["proxy"] = PROXY_URL
         
         # Add proxy authentication if configured
         if PROXY_AUTH:
