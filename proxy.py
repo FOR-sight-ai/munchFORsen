@@ -31,6 +31,10 @@ MERGE_HEADERS = {}
 # Global token request configuration
 TOKEN_REQUEST_CONFIG = None
 
+# Global proxy configuration
+PROXY_URL = None
+PROXY_AUTH = None
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -47,6 +51,53 @@ def get_logs_directory():
 
 LOG_DIR = get_logs_directory()
 os.makedirs(LOG_DIR, exist_ok=True)
+
+def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
+    """
+    Create an httpx AsyncClient with proxy configuration if available.
+    
+    Args:
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Configured httpx AsyncClient instance
+    """
+    client_kwargs = {"timeout": timeout}
+    
+    if PROXY_URL:
+        client_kwargs["proxies"] = PROXY_URL
+        
+        # Add proxy authentication if configured
+        if PROXY_AUTH:
+            client_kwargs["auth"] = PROXY_AUTH
+    
+    return httpx.AsyncClient(**client_kwargs)
+
+def parse_proxy_auth(proxy_auth_str: str) -> tuple:
+    """
+    Parse proxy authentication string in format 'username:password'.
+    
+    Args:
+        proxy_auth_str: Authentication string in format 'username:password'
+        
+    Returns:
+        Tuple of (username, password)
+        
+    Raises:
+        ValueError: If the format is invalid
+    """
+    if not proxy_auth_str or ':' not in proxy_auth_str:
+        raise ValueError("Proxy authentication must be in format 'username:password'")
+    
+    parts = proxy_auth_str.split(':', 1)  # Split only on first colon to handle passwords with colons
+    if len(parts) != 2:
+        raise ValueError("Proxy authentication must be in format 'username:password'")
+    
+    username, password = parts
+    if not username or not password:
+        raise ValueError("Both username and password must be non-empty")
+    
+    return (username, password)
 
 def load_merge_headers(file_path: str) -> dict:
     """
@@ -137,7 +188,7 @@ async def request_token(config: dict) -> str:
         Exception: If token request fails or token is not found in response
     """
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with create_http_client(timeout=30.0) as client:
             # Prepare request parameters
             method = config.get('method', 'POST').upper()
             url = config['url']
@@ -374,7 +425,7 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         # Perform the request
         start_time = datetime.utcnow()
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with create_http_client(timeout=30.0) as client:
                 if method.upper() == "POST":
                     response = await client.post(url_to_use, json=body, headers=filtered_headers)
                 elif method.upper() == "GET":
@@ -518,7 +569,7 @@ async def proxy(full_path: str, request: Request):
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Token request failed: {str(e)}"})
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with create_http_client(timeout=30.0) as client:
         response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
 
     try:
@@ -547,6 +598,8 @@ Examples:
   %(prog)s server --log                      # Start server with request logging enabled
   %(prog)s server --merge-header headers.json # Start server with header merging from JSON file
   %(prog)s server --token-request token.json  # Start server with token request enabled
+  %(prog)s server --proxy-url http://proxy.company.com:8080  # Start server with corporate proxy
+  %(prog)s server --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
@@ -590,6 +643,8 @@ Server Mode Examples:
   python proxy.py server --log               # Enable request logging
   python proxy.py server --merge-header headers.json  # Merge headers from JSON file
   python proxy.py server --token-request token.json   # Enable token request
+  python proxy.py server --proxy-url http://proxy.company.com:8080  # Use corporate proxy
+  python proxy.py server --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -641,6 +696,18 @@ Server Mode Examples:
         help="Path to JSON file containing parameters for making a token request. The obtained token will be used in Authorization header as 'Bearer {token}', replacing any existing authorization. Example: --token-request token_config.json",
         metavar='FILE'
     )
+    server_parser.add_argument(
+        "--proxy-url", 
+        type=str,
+        help="Corporate proxy URL to use for all HTTP requests. Supports HTTP and HTTPS proxies. Example: --proxy-url http://proxy.company.com:8080 or --proxy-url https://proxy.company.com:8080",
+        metavar='URL'
+    )
+    server_parser.add_argument(
+        "--proxy-auth", 
+        type=str,
+        help="Proxy authentication in the format 'username:password'. Use with --proxy-url for authenticated proxies. Example: --proxy-auth myuser:mypass",
+        metavar='USER:PASS'
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -656,6 +723,8 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --no-tool-roles     # Enable tool role replacement during replay
   python proxy.py replay <log_file_path> --merge-header headers.json  # Merge headers from JSON file during replay
   python proxy.py replay <log_file_path> --token-request token.json   # Enable token request during replay
+  python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080  # Use corporate proxy during replay
+  python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
 
 Log files location: {LOG_DIR}
         ''',
@@ -703,6 +772,18 @@ Log files location: {LOG_DIR}
         help="Path to JSON file containing parameters for making a token request. The obtained token will be used in Authorization header as 'Bearer {token}', replacing any existing authorization. Example: --token-request token_config.json",
         metavar='FILE'
     )
+    replay_parser.add_argument(
+        "--proxy-url", 
+        type=str,
+        help="Corporate proxy URL to use for all HTTP requests. Supports HTTP and HTTPS proxies. Example: --proxy-url http://proxy.company.com:8080 or --proxy-url https://proxy.company.com:8080",
+        metavar='URL'
+    )
+    replay_parser.add_argument(
+        "--proxy-auth", 
+        type=str,
+        help="Proxy authentication in the format 'username:password'. Use with --proxy-url for authenticated proxies. Example: --proxy-auth myuser:mypass",
+        metavar='USER:PASS'
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -712,7 +793,7 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
@@ -741,6 +822,23 @@ def run_server(args):
             print(f"Error loading token request configuration from {args.token_request}: {e}")
             sys.exit(1)
     
+    # Configure proxy settings if specified
+    if hasattr(args, 'proxy_url') and args.proxy_url:
+        PROXY_URL = args.proxy_url
+        print(f"Proxy URL configured: {PROXY_URL}")
+        
+        # Configure proxy authentication if specified
+        if hasattr(args, 'proxy_auth') and args.proxy_auth:
+            try:
+                PROXY_AUTH = parse_proxy_auth(args.proxy_auth)
+                print(f"Proxy authentication configured for user: {PROXY_AUTH[0]}")
+            except ValueError as e:
+                print(f"Error parsing proxy authentication: {e}")
+                sys.exit(1)
+    elif hasattr(args, 'proxy_auth') and args.proxy_auth:
+        print("Warning: --proxy-auth specified without --proxy-url. Proxy authentication will be ignored.")
+        print("Please specify --proxy-url along with --proxy-auth.")
+    
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
@@ -748,6 +846,10 @@ def run_server(args):
     print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
     print(f"Header merging: {'enabled' if MERGE_HEADERS else 'disabled'}")
     print(f"Token request: {'enabled' if TOKEN_REQUEST_CONFIG else 'disabled'}")
+    print(f"Corporate proxy: {'enabled' if PROXY_URL else 'disabled'}")
+    if PROXY_URL:
+        print(f"  - Proxy URL: {PROXY_URL}")
+        print(f"  - Proxy auth: {'enabled' if PROXY_AUTH else 'disabled'}")
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -755,6 +857,8 @@ def run_server(args):
 
 async def run_replay(args):
     """Run replay mode"""
+    global PROXY_URL, PROXY_AUTH
+    
     print(f"Replaying request from: {args.file}")
     if args.flatten_content:
         print("Content flattening: enabled")
@@ -782,6 +886,23 @@ async def run_replay(args):
         except Exception as e:
             print(f"Error loading token request configuration from {args.token_request}: {e}")
             return
+    
+    # Configure proxy settings if specified
+    if hasattr(args, 'proxy_url') and args.proxy_url:
+        PROXY_URL = args.proxy_url
+        print(f"Corporate proxy: enabled ({PROXY_URL})")
+        
+        # Configure proxy authentication if specified
+        if hasattr(args, 'proxy_auth') and args.proxy_auth:
+            try:
+                PROXY_AUTH = parse_proxy_auth(args.proxy_auth)
+                print(f"Proxy authentication: enabled (user: {PROXY_AUTH[0]})")
+            except ValueError as e:
+                print(f"Error parsing proxy authentication: {e}")
+                return
+    elif hasattr(args, 'proxy_auth') and args.proxy_auth:
+        print("Warning: --proxy-auth specified without --proxy-url. Proxy authentication will be ignored.")
+        print("Please specify --proxy-url along with --proxy-auth.")
     
     print("-" * 50)
     

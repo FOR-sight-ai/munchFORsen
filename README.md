@@ -16,6 +16,7 @@ A simple FastAPI proxy server for calling LLMs with HTTP request logging and rep
 - Automatic token request for OAuth2 and similar authentication flows
 - Content flattening for single-text message arrays
 - Tool role replacement for compatibility with different LLM providers
+- Corporate proxy support with optional authentication
 
 ## Installation
 
@@ -88,6 +89,12 @@ python proxy.py server --merge-header headers.json
 
 # Enable automatic token request for OAuth2 authentication
 python proxy.py server --token-request token_config.json
+
+# Use corporate proxy for all requests
+python proxy.py server --proxy-url http://proxy.company.com:8080
+
+# Use corporate proxy with authentication
+python proxy.py server --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
 
 # With the executable
 ./dist/proxy server --host 0.0.0.0 --port 8000
@@ -262,6 +269,38 @@ curl -X POST \
 
 **Security Note:** Keep your token configuration files secure as they contain sensitive credentials. Consider using environment variables for production deployments.
 
+### Corporate Proxy Support
+
+The `--proxy-url` and `--proxy-auth` options enable the proxy server to work through corporate firewalls and proxy servers. All HTTP requests (including token requests and API calls) will be routed through the specified proxy.
+
+**Usage:**
+```bash
+# Basic proxy usage (no authentication)
+python proxy.py server --proxy-url http://proxy.company.com:8080
+
+# Proxy with authentication
+python proxy.py server --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+
+# HTTPS proxy
+python proxy.py server --proxy-url https://secure-proxy.company.com:8080 --proxy-auth username:password
+
+# Replay with proxy
+python proxy.py replay log_file.json --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+```
+
+**Supported Proxy Types:**
+- HTTP proxies (`http://proxy.example.com:8080`)
+- HTTPS proxies (`https://proxy.example.com:8080`)
+- Authenticated proxies (using `--proxy-auth username:password`)
+
+**Behavior:**
+- All outbound HTTP requests (API calls, token requests) are routed through the proxy
+- Proxy authentication is handled automatically when configured
+- Both server and replay modes support proxy configuration
+- Proxy settings are applied globally to all HTTP clients
+
+**Security Note:** Proxy credentials are passed as command-line arguments. In production environments, consider using environment variables or configuration files to avoid exposing credentials in process lists.
+
 ### Replay Requests
 
 ```bash
@@ -276,6 +315,9 @@ python proxy.py replay <log_file_path> --merge-header headers.json
 
 # Replay with token request
 python proxy.py replay <log_file_path> --token-request token_config.json
+
+# Replay with corporate proxy
+python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
 
 # Replay to a different endpoint
 python proxy.py replay <log_file_path> --target-url https://api.openai.com/v1/chat/completions
@@ -316,6 +358,9 @@ docker run -p 8000:8000 munchforsen
 
 # Or with custom options
 docker run -p 9000:9000 munchforsen python proxy.py server --host 0.0.0.0 --port 9000 --log --flatten-content
+
+# With corporate proxy
+docker run -p 8000:8000 munchforsen python proxy.py server --host 0.0.0.0 --port 8000 --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
 ```
 
 ## Acknowledgement
