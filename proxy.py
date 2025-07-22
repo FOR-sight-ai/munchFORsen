@@ -36,6 +36,10 @@ PROXY_URL = None
 PROXY_AUTH = None
 PROXY_DEBUG = False
 
+# Global SSL configuration
+SSL_VERIFY = True  # True, False, or path to PEM file
+SSL_CERT_FILE = None  # Path to custom certificate file
+
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
     system = platform.system()
@@ -55,7 +59,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
     """
-    Create an httpx AsyncClient with proxy configuration if available.
+    Create an httpx AsyncClient with proxy and SSL configuration if available.
     
     Args:
         timeout: Request timeout in seconds
@@ -65,6 +69,7 @@ def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
     """
     client_kwargs = {"timeout": timeout}
     
+    # Configure proxy settings
     if PROXY_URL:
         # For proxy authentication, we need to embed credentials in the proxy URL
         if PROXY_AUTH:
@@ -78,6 +83,15 @@ def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
             client_kwargs["proxy"] = proxy_url_with_auth
         else:
             client_kwargs["proxy"] = PROXY_URL
+    
+    # Configure SSL settings
+    if SSL_VERIFY is False:
+        # Disable SSL verification completely
+        client_kwargs["verify"] = False
+    elif isinstance(SSL_VERIFY, str):
+        # Use custom PEM file for SSL verification
+        client_kwargs["verify"] = SSL_VERIFY
+    # If SSL_VERIFY is True (default), use system default verification
     
     return httpx.AsyncClient(**client_kwargs)
 
@@ -170,6 +184,74 @@ def parse_proxy_auth(proxy_auth_str: str) -> tuple:
         raise ValueError("Both username and password must be non-empty")
     
     return (username, password)
+
+def configure_ssl_from_env():
+    """
+    Configure SSL settings from environment variables.
+    
+    Checks for REQUESTS_CA_BUNDLE and SSL_CERT_FILE environment variables
+    and configures SSL verification accordingly.
+    
+    Returns:
+        tuple: (ssl_verify, ssl_cert_file) where ssl_verify can be True, False, or path to PEM file
+    """
+    ssl_verify = True
+    ssl_cert_file = None
+    
+    # Check for REQUESTS_CA_BUNDLE environment variable
+    ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE')
+    if ca_bundle:
+        if os.path.exists(ca_bundle):
+            ssl_verify = ca_bundle
+            ssl_cert_file = ca_bundle
+            print(f"Using SSL certificate bundle from REQUESTS_CA_BUNDLE: {ca_bundle}")
+        else:
+            print(f"Warning: REQUESTS_CA_BUNDLE points to non-existent file: {ca_bundle}")
+    
+    # Check for SSL_CERT_FILE environment variable (takes precedence)
+    cert_file = os.environ.get('SSL_CERT_FILE')
+    if cert_file:
+        if os.path.exists(cert_file):
+            ssl_verify = cert_file
+            ssl_cert_file = cert_file
+            print(f"Using SSL certificate file from SSL_CERT_FILE: {cert_file}")
+        else:
+            print(f"Warning: SSL_CERT_FILE points to non-existent file: {cert_file}")
+    
+    return ssl_verify, ssl_cert_file
+
+def validate_ssl_cert_file(cert_path: str) -> bool:
+    """
+    Validate that the SSL certificate file exists and is readable.
+    
+    Args:
+        cert_path: Path to the certificate file
+        
+    Returns:
+        True if file is valid, False otherwise
+    """
+    if not cert_path:
+        return False
+    
+    if not os.path.exists(cert_path):
+        print(f"Error: SSL certificate file not found: {cert_path}")
+        return False
+    
+    if not os.path.isfile(cert_path):
+        print(f"Error: SSL certificate path is not a file: {cert_path}")
+        return False
+    
+    try:
+        with open(cert_path, 'r') as f:
+            content = f.read(100)  # Read first 100 chars to check if readable
+            if not content.strip():
+                print(f"Error: SSL certificate file appears to be empty: {cert_path}")
+                return False
+    except Exception as e:
+        print(f"Error: Cannot read SSL certificate file {cert_path}: {e}")
+        return False
+    
+    return True
 
 def load_merge_headers(file_path: str) -> dict:
     """
@@ -687,6 +769,8 @@ Examples:
   %(prog)s server --token-request token.json  # Start server with token request enabled
   %(prog)s server --proxy-url http://proxy.company.com:8080  # Start server with corporate proxy
   %(prog)s server --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
+  %(prog)s server --ssl-no-verify            # Disable SSL verification (insecure)
+  %(prog)s server --ssl-cert-file Root_CA_V3.pem  # Use custom SSL certificate
   %(prog)s replay <log_file_path>             # Replay a saved request
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
@@ -732,6 +816,8 @@ Server Mode Examples:
   python proxy.py server --token-request token.json   # Enable token request
   python proxy.py server --proxy-url http://proxy.company.com:8080  # Use corporate proxy
   python proxy.py server --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
+  python proxy.py server --ssl-no-verify     # Disable SSL verification (insecure)
+  python proxy.py server --ssl-cert-file Root_CA_V3.pem  # Use custom SSL certificate
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -800,6 +886,17 @@ Server Mode Examples:
         action="store_true",
         help="Enable detailed proxy debugging information in error messages"
     )
+    server_parser.add_argument(
+        "--ssl-no-verify",
+        action="store_true",
+        help="Disable SSL certificate verification completely. WARNING: This makes connections insecure and vulnerable to man-in-the-middle attacks. Use only for testing or with trusted networks."
+    )
+    server_parser.add_argument(
+        "--ssl-cert-file",
+        type=str,
+        help="Path to custom SSL certificate file (PEM format) for certificate verification. Useful for corporate environments with custom CA certificates. Example: --ssl-cert-file /path/to/Root_CA_V3.pem",
+        metavar='PEM_FILE'
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -817,6 +914,8 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --token-request token.json   # Enable token request during replay
   python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080  # Use corporate proxy during replay
   python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass  # With proxy auth
+  python proxy.py replay <log_file_path> --ssl-no-verify  # Disable SSL verification during replay
+  python proxy.py replay <log_file_path> --ssl-cert-file Root_CA_V3.pem  # Use custom SSL certificate during replay
 
 Log files location: {LOG_DIR}
         ''',
@@ -881,6 +980,17 @@ Log files location: {LOG_DIR}
         action="store_true",
         help="Enable detailed proxy debugging information in error messages"
     )
+    replay_parser.add_argument(
+        "--ssl-no-verify",
+        action="store_true",
+        help="Disable SSL certificate verification completely. WARNING: This makes connections insecure and vulnerable to man-in-the-middle attacks. Use only for testing or with trusted networks."
+    )
+    replay_parser.add_argument(
+        "--ssl-cert-file",
+        type=str,
+        help="Path to custom SSL certificate file (PEM format) for certificate verification. Useful for corporate environments with custom CA certificates. Example: --ssl-cert-file /path/to/Root_CA_V3.pem",
+        metavar='PEM_FILE'
+    )
     
     # Test proxy mode
     test_parser = subparsers.add_parser(
@@ -892,6 +1002,8 @@ Test Proxy Examples:
   python proxy.py test-proxy --proxy-url http://proxy.company.com:8080
   python proxy.py test-proxy --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass
   python proxy.py test-proxy --proxy-url https://proxy.company.com:8080 --proxy-auth "domain\\user:pass"
+  python proxy.py test-proxy --proxy-url http://proxy.company.com:8080 --ssl-no-verify
+  python proxy.py test-proxy --proxy-url http://proxy.company.com:8080 --ssl-cert-file Root_CA_V3.pem
         '''
     )
     test_parser.add_argument(
@@ -907,6 +1019,17 @@ Test Proxy Examples:
         help="Proxy authentication in the format 'username:password'. Example: --proxy-auth myuser:mypass",
         metavar='USER:PASS'
     )
+    test_parser.add_argument(
+        "--ssl-no-verify",
+        action="store_true",
+        help="Disable SSL certificate verification for the proxy test. WARNING: This makes connections insecure and vulnerable to man-in-the-middle attacks. Use only for testing or with trusted networks."
+    )
+    test_parser.add_argument(
+        "--ssl-cert-file",
+        type=str,
+        help="Path to custom SSL certificate file (PEM format) for certificate verification during proxy test. Example: --ssl-cert-file /path/to/Root_CA_V3.pem",
+        metavar='PEM_FILE'
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -916,7 +1039,7 @@ Test Proxy Examples:
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
@@ -966,6 +1089,30 @@ def run_server(args):
     if hasattr(args, 'proxy_debug') and args.proxy_debug:
         PROXY_DEBUG = True
         print("Proxy debug mode enabled")
+
+    # Configure SSL settings
+    # First check environment variables
+    env_ssl_verify, env_ssl_cert_file = configure_ssl_from_env()
+    
+    # Command line arguments override environment variables
+    if hasattr(args, 'ssl_no_verify') and args.ssl_no_verify:
+        if hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+            print("Warning: Both --ssl-no-verify and --ssl-cert-file specified. --ssl-no-verify takes precedence.")
+        SSL_VERIFY = False
+        SSL_CERT_FILE = None
+        print("⚠️  SSL certificate verification DISABLED - connections are insecure!")
+    elif hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+        if validate_ssl_cert_file(args.ssl_cert_file):
+            SSL_VERIFY = args.ssl_cert_file
+            SSL_CERT_FILE = args.ssl_cert_file
+            print(f"SSL certificate file configured: {args.ssl_cert_file}")
+        else:
+            print("Error: Invalid SSL certificate file specified")
+            sys.exit(1)
+    else:
+        # Use environment variable settings if no command line args
+        SSL_VERIFY = env_ssl_verify
+        SSL_CERT_FILE = env_ssl_cert_file
     
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
@@ -978,6 +1125,16 @@ def run_server(args):
     if PROXY_URL:
         print(f"  - Proxy URL: {PROXY_URL}")
         print(f"  - Proxy auth: {'enabled' if PROXY_AUTH else 'disabled'}")
+    
+    # SSL configuration status
+    if SSL_VERIFY is False:
+        print(f"SSL verification: ⚠️  DISABLED (insecure)")
+    elif isinstance(SSL_VERIFY, str):
+        print(f"SSL verification: enabled with custom certificate")
+        print(f"  - Certificate file: {SSL_VERIFY}")
+    else:
+        print(f"SSL verification: enabled (system default)")
+    
     print(f"Server will be available at: http://{args.host}:{args.port}")
     
     import uvicorn
@@ -985,7 +1142,7 @@ def run_server(args):
 
 async def run_replay(args):
     """Run replay mode"""
-    global PROXY_URL, PROXY_AUTH, PROXY_DEBUG
+    global PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE
     
     print(f"Replaying request from: {args.file}")
     if args.flatten_content:
@@ -1036,6 +1193,36 @@ async def run_replay(args):
     if hasattr(args, 'proxy_debug') and args.proxy_debug:
         PROXY_DEBUG = True
         print("Proxy debug mode: enabled")
+
+    # Configure SSL settings
+    # First check environment variables
+    env_ssl_verify, env_ssl_cert_file = configure_ssl_from_env()
+    
+    # Command line arguments override environment variables
+    if hasattr(args, 'ssl_no_verify') and args.ssl_no_verify:
+        if hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+            print("Warning: Both --ssl-no-verify and --ssl-cert-file specified. --ssl-no-verify takes precedence.")
+        SSL_VERIFY = False
+        SSL_CERT_FILE = None
+        print("SSL verification: ⚠️  DISABLED (insecure)")
+    elif hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+        if validate_ssl_cert_file(args.ssl_cert_file):
+            SSL_VERIFY = args.ssl_cert_file
+            SSL_CERT_FILE = args.ssl_cert_file
+            print(f"SSL verification: enabled with custom certificate ({args.ssl_cert_file})")
+        else:
+            print("Error: Invalid SSL certificate file specified")
+            return
+    else:
+        # Use environment variable settings if no command line args
+        SSL_VERIFY = env_ssl_verify
+        SSL_CERT_FILE = env_ssl_cert_file
+        if SSL_VERIFY is False:
+            print("SSL verification: ⚠️  DISABLED (insecure)")
+        elif isinstance(SSL_VERIFY, str):
+            print(f"SSL verification: enabled with custom certificate ({SSL_VERIFY})")
+        else:
+            print("SSL verification: enabled (system default)")
     
     print("-" * 50)
     
@@ -1075,8 +1262,40 @@ async def run_replay(args):
 
 async def run_test_proxy(args):
     """Test proxy connectivity and authentication"""
+    global SSL_VERIFY, SSL_CERT_FILE
+    
     print("🔍 Testing proxy connectivity...")
     print(f"Proxy URL: {args.proxy_url}")
+
+    # Configure SSL settings for the test
+    # First check environment variables
+    env_ssl_verify, env_ssl_cert_file = configure_ssl_from_env()
+    
+    # Command line arguments override environment variables
+    if hasattr(args, 'ssl_no_verify') and args.ssl_no_verify:
+        if hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+            print("Warning: Both --ssl-no-verify and --ssl-cert-file specified. --ssl-no-verify takes precedence.")
+        SSL_VERIFY = False
+        SSL_CERT_FILE = None
+        print("SSL verification: ⚠️  DISABLED (insecure)")
+    elif hasattr(args, 'ssl_cert_file') and args.ssl_cert_file:
+        if validate_ssl_cert_file(args.ssl_cert_file):
+            SSL_VERIFY = args.ssl_cert_file
+            SSL_CERT_FILE = args.ssl_cert_file
+            print(f"SSL verification: enabled with custom certificate ({args.ssl_cert_file})")
+        else:
+            print("Error: Invalid SSL certificate file specified")
+            return
+    else:
+        # Use environment variable settings if no command line args
+        SSL_VERIFY = env_ssl_verify
+        SSL_CERT_FILE = env_ssl_cert_file
+        if SSL_VERIFY is False:
+            print("SSL verification: ⚠️  DISABLED (insecure)")
+        elif isinstance(SSL_VERIFY, str):
+            print(f"SSL verification: enabled with custom certificate ({SSL_VERIFY})")
+        else:
+            print("SSL verification: enabled (system default)")
     
     # Parse authentication if provided
     proxy_auth = None

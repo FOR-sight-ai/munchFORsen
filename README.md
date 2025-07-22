@@ -17,6 +17,7 @@ A simple FastAPI proxy server for calling LLMs with HTTP request logging and rep
 - Content flattening for single-text message arrays
 - Tool role replacement for compatibility with different LLM providers
 - Corporate proxy support with optional authentication
+- SSL certificate management with custom CA certificates or disabled verification
 
 ## Installation
 
@@ -95,6 +96,12 @@ python proxy.py server --proxy-url http://proxy.company.com:8080
 
 # Use corporate proxy with authentication
 python proxy.py server --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+
+# Disable SSL verification (insecure - for testing only)
+python proxy.py server --ssl-no-verify
+
+# Use custom SSL certificate file
+python proxy.py server --ssl-cert-file /path/to/Root_CA_V3.pem
 
 # With the executable
 ./dist/proxy server --host 0.0.0.0 --port 8000
@@ -301,6 +308,52 @@ python proxy.py replay log_file.json --proxy-url http://proxy.company.com:8080 -
 
 **Security Note:** Proxy credentials are passed as command-line arguments. In production environments, consider using environment variables or configuration files to avoid exposing credentials in process lists.
 
+### SSL Certificate Management
+
+The proxy supports flexible SSL certificate management for corporate environments where custom CA certificates are required or SSL verification needs to be disabled for testing.
+
+**Usage:**
+```bash
+# Disable SSL verification completely (insecure - for testing only)
+python proxy.py server --ssl-no-verify
+
+# Use custom SSL certificate file
+python proxy.py server --ssl-cert-file /path/to/Root_CA_V3.pem
+
+# Replay with SSL options
+python proxy.py replay <log_file_path> --ssl-no-verify
+python proxy.py replay <log_file_path> --ssl-cert-file /path/to/Root_CA_V3.pem
+```
+
+**Environment Variables:**
+The proxy also supports SSL configuration through environment variables:
+
+```bash
+# Set custom CA bundle (similar to requests library)
+export REQUESTS_CA_BUNDLE=/path/to/Root_CA_V3.pem
+
+# Alternative SSL certificate file variable
+export SSL_CERT_FILE=/path/to/Root_CA_V3.pem
+
+# Then run the proxy (will automatically use the certificate)
+python proxy.py server
+```
+
+**Corporate Proxy SSL Considerations:**
+In corporate environments with proxy servers, different requests may require different SSL settings:
+- **Proxy connectivity test**: May need custom certificates or disabled verification
+- **Token fetching**: OAuth2 endpoints might use different certificates
+- **Main API requests**: Target API might have different SSL requirements
+
+Common SSL errors and solutions:
+- `"self signed certificate"` → Use `--ssl-cert-file` with your corporate CA certificate
+- `"certificate verify failed: unable to get local issuer certificate"` → Use `--ssl-cert-file` or `--ssl-no-verify`
+
+**Security Warning:** 
+- `--ssl-no-verify` disables all SSL certificate verification, making connections vulnerable to man-in-the-middle attacks
+- Only use `--ssl-no-verify` for testing or in trusted network environments
+- For production, always use `--ssl-cert-file` with proper CA certificates
+
 ### Replay Requests
 
 ```bash
@@ -318,6 +371,10 @@ python proxy.py replay <log_file_path> --token-request token_config.json
 
 # Replay with corporate proxy
 python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+
+# Replay with SSL options
+python proxy.py replay <log_file_path> --ssl-no-verify
+python proxy.py replay <log_file_path> --ssl-cert-file /path/to/Root_CA_V3.pem
 
 # Replay to a different endpoint
 python proxy.py replay <log_file_path> --target-url https://api.openai.com/v1/chat/completions
@@ -361,6 +418,12 @@ docker run -p 9000:9000 munchforsen python proxy.py server --host 0.0.0.0 --port
 
 # With corporate proxy
 docker run -p 8000:8000 munchforsen python proxy.py server --host 0.0.0.0 --port 8000 --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+
+# With SSL certificate file (mount the certificate into the container)
+docker run -p 8000:8000 -v /path/to/certs:/certs munchforsen python proxy.py server --host 0.0.0.0 --port 8000 --ssl-cert-file /certs/Root_CA_V3.pem
+
+# With disabled SSL verification (for testing)
+docker run -p 8000:8000 munchforsen python proxy.py server --host 0.0.0.0 --port 8000 --ssl-no-verify
 ```
 
 ## Acknowledgement
