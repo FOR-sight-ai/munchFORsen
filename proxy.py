@@ -34,6 +34,7 @@ TOKEN_REQUEST_CONFIG = None
 # Global proxy configuration
 PROXY_URL = None
 PROXY_AUTH = None
+PROXY_DEBUG = False
 
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
@@ -65,13 +66,84 @@ def create_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
     client_kwargs = {"timeout": timeout}
     
     if PROXY_URL:
-        client_kwargs["proxy"] = PROXY_URL
-        
-        # Add proxy authentication if configured
+        # For proxy authentication, we need to embed credentials in the proxy URL
         if PROXY_AUTH:
-            client_kwargs["auth"] = PROXY_AUTH
+            username, password = PROXY_AUTH
+            # Parse the proxy URL to inject credentials
+            if "://" in PROXY_URL:
+                scheme, rest = PROXY_URL.split("://", 1)
+                proxy_url_with_auth = f"{scheme}://{username}:{password}@{rest}"
+            else:
+                proxy_url_with_auth = f"{username}:{password}@{PROXY_URL}"
+            client_kwargs["proxy"] = proxy_url_with_auth
+        else:
+            client_kwargs["proxy"] = PROXY_URL
     
     return httpx.AsyncClient(**client_kwargs)
+
+async def test_proxy_connection(proxy_url: str, proxy_auth: tuple = None) -> dict:
+    """
+    Test proxy connection by making a simple HTTP request.
+    
+    Args:
+        proxy_url: Proxy URL to test
+        proxy_auth: Optional tuple of (username, password) for authentication
+        
+    Returns:
+        Dictionary with test results
+    """
+    test_url = "https://httpbin.org/ip"
+    result = {
+        "success": False,
+        "error": None,
+        "response_time": None,
+        "status_code": None,
+        "proxy_url": proxy_url
+    }
+    
+    try:
+        import time
+        start_time = time.time()
+        
+        # Create client with proxy configuration
+        client_kwargs = {"timeout": 10.0}
+        
+        if proxy_auth:
+            username, password = proxy_auth
+            if "://" in proxy_url:
+                scheme, rest = proxy_url.split("://", 1)
+                proxy_url_with_auth = f"{scheme}://{username}:{password}@{rest}"
+            else:
+                proxy_url_with_auth = f"{username}:{password}@{proxy_url}"
+            client_kwargs["proxy"] = proxy_url_with_auth
+        else:
+            client_kwargs["proxy"] = proxy_url
+        
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.get(test_url)
+            
+        end_time = time.time()
+        result["response_time"] = round((end_time - start_time) * 1000, 2)  # ms
+        result["status_code"] = response.status_code
+        result["success"] = response.status_code == 200
+        
+        if response.status_code == 200:
+            try:
+                response_data = response.json()
+                result["origin_ip"] = response_data.get("origin", "unknown")
+            except:
+                pass
+                
+    except httpx.ProxyError as e:
+        result["error"] = f"Proxy error: {str(e)}"
+        if "407" in str(e) or "Authentication Required" in str(e):
+            result["error"] = "Proxy authentication failed (407). Check your credentials."
+    except httpx.TimeoutException as e:
+        result["error"] = f"Timeout error: {str(e)}"
+    except Exception as e:
+        result["error"] = f"Connection error: {str(e)}"
+    
+    return result
 
 def parse_proxy_auth(proxy_auth_str: str) -> tuple:
     """
@@ -569,8 +641,23 @@ async def proxy(full_path: str, request: Request):
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Token request failed: {str(e)}"})
 
-    async with create_http_client(timeout=30.0) as client:
-        response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
+    try:
+        async with create_http_client(timeout=30.0) as client:
+            response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
+    except httpx.ProxyError as e:
+        if "407" in str(e) or "Authentication Required" in str(e):
+            error_msg = "Proxy authentication failed (407). Please check your proxy credentials."
+            if PROXY_DEBUG:
+                error_msg += f" Details: {str(e)}"
+            return JSONResponse(status_code=407, content={"error": error_msg})
+        else:
+            error_msg = f"Proxy error: {str(e)}"
+            return JSONResponse(status_code=502, content={"error": error_msg})
+    except httpx.RequestError as e:
+        error_msg = f"Request error: {str(e)}"
+        if PROXY_DEBUG:
+            error_msg += f" (Proxy URL: {PROXY_URL})"
+        return JSONResponse(status_code=502, content={"error": error_msg})
 
     try:
         response_json = response.json()
@@ -708,6 +795,11 @@ Server Mode Examples:
         help="Proxy authentication in the format 'username:password'. Use with --proxy-url for authenticated proxies. Example: --proxy-auth myuser:mypass",
         metavar='USER:PASS'
     )
+    server_parser.add_argument(
+        "--proxy-debug",
+        action="store_true",
+        help="Enable detailed proxy debugging information in error messages"
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -784,6 +876,37 @@ Log files location: {LOG_DIR}
         help="Proxy authentication in the format 'username:password'. Use with --proxy-url for authenticated proxies. Example: --proxy-auth myuser:mypass",
         metavar='USER:PASS'
     )
+    replay_parser.add_argument(
+        "--proxy-debug",
+        action="store_true",
+        help="Enable detailed proxy debugging information in error messages"
+    )
+    
+    # Test proxy mode
+    test_parser = subparsers.add_parser(
+        'test-proxy',
+        help='Test corporate proxy connectivity and authentication',
+        description='Test if the corporate proxy configuration is working correctly',
+        epilog='''
+Test Proxy Examples:
+  python proxy.py test-proxy --proxy-url http://proxy.company.com:8080
+  python proxy.py test-proxy --proxy-url http://proxy.company.com:8080 --proxy-auth user:pass
+  python proxy.py test-proxy --proxy-url https://proxy.company.com:8080 --proxy-auth "domain\\user:pass"
+        '''
+    )
+    test_parser.add_argument(
+        "--proxy-url",
+        type=str,
+        required=True,
+        help="Corporate proxy URL to test. Example: --proxy-url http://proxy.company.com:8080",
+        metavar='URL'
+    )
+    test_parser.add_argument(
+        "--proxy-auth",
+        type=str,
+        help="Proxy authentication in the format 'username:password'. Example: --proxy-auth myuser:mypass",
+        metavar='USER:PASS'
+    )
     
     # If no arguments provided, default to server mode
     if len(sys.argv) == 1:
@@ -793,7 +916,7 @@ Log files location: {LOG_DIR}
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
@@ -839,6 +962,11 @@ def run_server(args):
         print("Warning: --proxy-auth specified without --proxy-url. Proxy authentication will be ignored.")
         print("Please specify --proxy-url along with --proxy-auth.")
     
+    # Configure proxy debug mode
+    if hasattr(args, 'proxy_debug') and args.proxy_debug:
+        PROXY_DEBUG = True
+        print("Proxy debug mode enabled")
+    
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
@@ -857,7 +985,7 @@ def run_server(args):
 
 async def run_replay(args):
     """Run replay mode"""
-    global PROXY_URL, PROXY_AUTH
+    global PROXY_URL, PROXY_AUTH, PROXY_DEBUG
     
     print(f"Replaying request from: {args.file}")
     if args.flatten_content:
@@ -904,6 +1032,11 @@ async def run_replay(args):
         print("Warning: --proxy-auth specified without --proxy-url. Proxy authentication will be ignored.")
         print("Please specify --proxy-url along with --proxy-auth.")
     
+    # Configure proxy debug mode
+    if hasattr(args, 'proxy_debug') and args.proxy_debug:
+        PROXY_DEBUG = True
+        print("Proxy debug mode: enabled")
+    
     print("-" * 50)
     
     result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, merge_headers, token_request_config)
@@ -940,8 +1073,68 @@ async def run_replay(args):
                 print(f"⏰ Original timestamp: {result['replay_info']['original_timestamp']}")
                 print(f"🔄 Replay timestamp: {result['replay_info']['replay_timestamp']}")
 
+async def run_test_proxy(args):
+    """Test proxy connectivity and authentication"""
+    print("🔍 Testing proxy connectivity...")
+    print(f"Proxy URL: {args.proxy_url}")
+    
+    # Parse authentication if provided
+    proxy_auth = None
+    if args.proxy_auth:
+        try:
+            proxy_auth = parse_proxy_auth(args.proxy_auth)
+            print(f"Authentication: enabled (user: {proxy_auth[0]})")
+        except ValueError as e:
+            print(f"❌ Error parsing proxy authentication: {e}")
+            return
+    else:
+        print("Authentication: none")
+    
+    print("-" * 50)
+    print("🚀 Starting proxy test...")
+    
+    # Test the proxy connection
+    result = await test_proxy_connection(args.proxy_url, proxy_auth)
+    
+    print("-" * 50)
+    
+    if result["success"]:
+        print("✅ Proxy test SUCCESSFUL!")
+        print(f"   Response time: {result['response_time']}ms")
+        print(f"   Status code: {result['status_code']}")
+        if "origin_ip" in result:
+            print(f"   Origin IP: {result['origin_ip']}")
+        print("\n🎉 Your proxy configuration is working correctly!")
+        print("   You can now use these settings with the server:")
+        if proxy_auth:
+            print(f"   python proxy.py server --proxy-url {args.proxy_url} --proxy-auth {proxy_auth[0]}:****")
+        else:
+            print(f"   python proxy.py server --proxy-url {args.proxy_url}")
+    else:
+        print("❌ Proxy test FAILED!")
+        print(f"   Error: {result['error']}")
+        
+        if "407" in str(result['error']) or "Authentication Required" in str(result['error']):
+            print("\n💡 Troubleshooting tips for 407 Authentication Required:")
+            print("   1. Double-check your username and password")
+            print("   2. Try URL-encoding special characters in credentials")
+            print("   3. For domain authentication, try: DOMAIN\\username or username@domain.com")
+            print("   4. Contact your IT department to verify proxy settings")
+        elif "timeout" in str(result['error']).lower():
+            print("\n💡 Troubleshooting tips for timeout:")
+            print("   1. Check if the proxy URL and port are correct")
+            print("   2. Verify network connectivity to the proxy server")
+            print("   3. Try a different proxy port (common: 8080, 3128, 8888)")
+        else:
+            print("\n💡 General troubleshooting:")
+            print("   1. Verify the proxy URL format: http://proxy.company.com:port")
+            print("   2. Check if the proxy requires authentication")
+            print("   3. Test with a web browser using the same proxy settings")
+        
+        print(f"\n📖 For more help, see: PROXY_TROUBLESHOOTING.md")
+
 def main():
-    """Main function to handle both server and replay modes"""
+    """Main function to handle server, replay, and test-proxy modes"""
     args = parse_arguments()
     
     # Handle --logs-dir option
@@ -956,6 +1149,10 @@ def main():
     elif args.mode == 'replay':
         # Replay mode - use asyncio.run() for async operations
         asyncio.run(run_replay(args))
+        
+    elif args.mode == 'test-proxy':
+        # Test proxy mode - use asyncio.run() for async operations
+        asyncio.run(run_test_proxy(args))
 
 if __name__ == "__main__":
     main()
