@@ -136,6 +136,9 @@ The implementation has been tested for:
 - ✅ Server startup with proxy configuration
 - ✅ Help text and documentation
 - ✅ Backward compatibility
+- ✅ httpx AsyncClient proxy parameter configuration
+- ✅ HTTP and HTTPS proxy support
+- ✅ Proxy with and without authentication
 
 ## Backward Compatibility
 
