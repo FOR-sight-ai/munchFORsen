@@ -107,6 +107,18 @@ python proxy.py replay log_file.json --proxy-url http://proxy.company.com:8080
 python proxy.py replay log_file.json --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
 ```
 
+### Test Proxy Connectivity
+```bash
+# Test basic proxy connectivity
+python proxy.py test-proxy --proxy-url http://proxy.company.com:8080
+
+# Test proxy with authentication
+python proxy.py test-proxy --proxy-url http://proxy.company.com:8080 --proxy-auth username:password
+
+# Test HTTPS proxy with domain authentication
+python proxy.py test-proxy --proxy-url https://proxy.company.com:8080 --proxy-auth "DOMAIN\\username:password"
+```
+
 ### Combined with Other Features
 ```bash
 # Proxy + token request + header merging
@@ -116,6 +128,12 @@ python proxy.py server \
   --token-request token_config.json \
   --merge-header headers.json \
   --log
+
+# Server with proxy debugging enabled
+python proxy.py server \
+  --proxy-url http://proxy.company.com:8080 \
+  --proxy-auth username:password \
+  --proxy-debug
 ```
 
 ## Security Considerations
@@ -124,6 +142,26 @@ python proxy.py server \
 2. **Recommendation**: Use environment variables or configuration files in production
 3. **Credential Storage**: Keep proxy authentication secure
 4. **Network Security**: Ensure proxy connections are encrypted when possible
+
+## Recent Updates
+
+### 2025-07-22 - 407 Authentication Error Fix and Troubleshooting
+- **Issue**: Fixed 407 Authentication Required error with corporate proxies
+- **Root Cause**: httpx requires proxy credentials to be embedded in the proxy URL, not passed as separate auth parameter
+- **Changes**:
+  - Fixed proxy authentication by embedding credentials in proxy URL format
+  - Added comprehensive error handling for proxy authentication failures
+  - Added `--proxy-debug` flag for detailed error information
+  - Added `test-proxy` command to test proxy connectivity and authentication
+  - Created comprehensive `PROXY_TROUBLESHOOTING.md` guide
+- **Impact**: Corporate proxy authentication now works correctly
+- **Testing**: Verified proxy authentication with embedded credentials format
+
+### 2025-07-22 - httpx Proxy Parameter Fix
+- **Issue**: Fixed incorrect parameter name for httpx AsyncClient proxy configuration
+- **Change**: Changed `client_kwargs["proxies"]` to `client_kwargs["proxy"]` in `create_http_client()` function
+- **Impact**: Proxy functionality now works correctly with httpx library
+- **Testing**: Verified HTTP/HTTPS proxy support with and without authentication
 
 ## Testing
 
@@ -139,6 +177,9 @@ The implementation has been tested for:
 - ✅ httpx AsyncClient proxy parameter configuration
 - ✅ HTTP and HTTPS proxy support
 - ✅ Proxy with and without authentication
+- ✅ 407 Authentication Required error handling
+- ✅ Proxy debug mode functionality
+- ✅ Proxy connectivity testing command
 
 ## Backward Compatibility
 
