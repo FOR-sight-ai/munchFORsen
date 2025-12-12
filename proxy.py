@@ -641,15 +641,19 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
             end_time = datetime.utcnow()
             response_time = (end_time - start_time).total_seconds()
             
-            # Parse response
-            try:
-                response_json = response.json()
-            except Exception as json_error:
-                response_json = {
-                    "error": "Invalid JSON response", 
-                    "content": response.text,
-                    "json_parse_error": str(json_error)
-                }
+            # Parse response - check if it's streaming content or regular JSON
+            content_type = response.headers.get('content-type', '').lower()
+            
+            # For streaming content (NDJSON, SSE), return raw text directly
+            if 'text/event-stream' in content_type or 'application/x-ndjson' in content_type or 'text/plain' in content_type:
+                response_body = response.text
+            else:
+                # Try to parse as JSON, fall back to text if it fails
+                try:
+                    response_body = response.json()
+                except Exception:
+                    # If JSON parsing fails, return the raw text content
+                    response_body = response.text
             
             return {
                 "success": True,
@@ -669,7 +673,7 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
                 "response": {
                     "status_code": response.status_code,
                     "headers": dict(response.headers),
-                    "body": response_json
+                    "body": response_body
                 }
             }
             
@@ -813,20 +817,28 @@ async def proxy(full_path: str, request: Request):
             
         return JSONResponse(status_code=502, content=error_content)
 
-    try:
-        response_json = response.json()
-    except Exception:
-        # Si la réponse n'est pas du JSON, retourner le texte brut
-        response_json = {"error": "Invalid JSON response", "content": response.text}
+    # Check if response is streaming content or regular JSON
+    content_type = response.headers.get('content-type', '').lower()
+    
+    # For streaming content (NDJSON, SSE), return raw text directly
+    if 'text/event-stream' in content_type or 'application/x-ndjson' in content_type or 'text/plain' in content_type:
+        response_content = response.text
+    else:
+        # Try to parse as JSON, fall back to text if it fails
+        try:
+            response_content = response.json()
+        except Exception:
+            # If JSON parsing fails, return the raw text content
+            response_content = response.text
 
     if response.status_code == 200:
         if ENABLE_LOGGING:
-            await save_response_to_file(request_id, timestamp, 200, response.headers, response_json)
-        return JSONResponse(status_code=200, content=response_json)
+            await save_response_to_file(request_id, timestamp, 200, response.headers, response_content)
+        return JSONResponse(status_code=200, content=response_content)
     else:
         if ENABLE_LOGGING:
-            await save_response_to_file(request_id, timestamp, response.status_code, response.headers, response_json)
-        return JSONResponse(status_code=response.status_code, content=response_json)
+            await save_response_to_file(request_id, timestamp, response.status_code, response.headers, response_content)
+        return JSONResponse(status_code=response.status_code, content=response_content)
     
 def parse_arguments():
     """Parse command line arguments"""
