@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import asyncio
 import random
@@ -785,9 +785,82 @@ async def proxy(full_path: str, request: Request):
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Token request failed: {str(e)}"})
 
+    # Check if this is a streaming request
+    is_streaming = body_to_send.get('stream', False)
+    
     try:
-        async with create_http_client(timeout=30.0) as client:
-            response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
+        client = create_http_client(timeout=120.0)  # Longer timeout for streaming
+        
+        if is_streaming:
+            # For streaming requests, we need to stream the response
+            async def stream_response():
+                try:
+                    async with client:
+                        async with client.stream('POST', TARGET_URL, json=body_to_send, headers=filtered_headers) as response:
+                            # Forward the status code and headers
+                            if response.status_code != 200:
+                                # For error responses, read the full content and return as JSON
+                                error_content = await response.aread()
+                                if ENABLE_LOGGING:
+                                    try:
+                                        error_json = json.loads(error_content)
+                                        await save_response_to_file(request_id, timestamp, response.status_code, response.headers, error_json)
+                                    except:
+                                        await save_response_to_file(request_id, timestamp, response.status_code, response.headers, error_content.decode('utf-8', errors='replace'))
+                                yield error_content
+                                return
+                            
+                            # Stream the response chunks as they arrive
+                            collected_chunks = []
+                            async for chunk in response.aiter_bytes():
+                                if chunk:
+                                    if ENABLE_LOGGING:
+                                        collected_chunks.append(chunk)
+                                    yield chunk
+                            
+                            # Save the complete streamed response if logging is enabled
+                            if ENABLE_LOGGING and collected_chunks:
+                                full_response = b''.join(collected_chunks).decode('utf-8', errors='replace')
+                                await save_response_to_file(request_id, timestamp, 200, response.headers, full_response)
+                                
+                except httpx.ProxyError as e:
+                    if "407" in str(e) or "Authentication Required" in str(e):
+                        error_msg = "Proxy authentication failed (407). Please check your proxy credentials."
+                        if PROXY_DEBUG:
+                            error_msg += f" Details: {str(e)}"
+                        error_content = {"error": error_msg}
+                    else:
+                        error_msg = f"Proxy error: {str(e)}"
+                        error_content = {"error": error_msg}
+                    
+                    if ENABLE_LOGGING:
+                        await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+                    yield json.dumps(error_content).encode('utf-8')
+                    
+                except httpx.RequestError as e:
+                    error_msg = f"Request error: {str(e)}"
+                    if PROXY_DEBUG:
+                        error_msg += f" (Proxy URL: {PROXY_URL})"
+                    error_content = {"error": error_msg}
+                    
+                    if ENABLE_LOGGING:
+                        await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+                    yield json.dumps(error_content).encode('utf-8')
+            
+            # Return streaming response with appropriate headers
+            return StreamingResponse(
+                stream_response(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+        else:
+            # For non-streaming requests, use the original behavior
+            async with client:
+                response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
+                
     except httpx.ProxyError as e:
         if "407" in str(e) or "Authentication Required" in str(e):
             error_msg = "Proxy authentication failed (407). Please check your proxy credentials."

@@ -40,4 +40,4 @@ USER nonroot
 # Uses `fastapi dev` to enable hot-reloading when the `watch` sync occurs
 # Uses `--host 0.0.0.0` to allow access from outside the container
 # Note in production, you should use `fastapi run` instead
-CMD ["/bin/sh", "-c", "python proxy.py server --target-url \"$URL\" \"$ARG\""]
+CMD ["/bin/sh", "-c", "python proxy.py server --target-url \"$URL\" $ARG"]
