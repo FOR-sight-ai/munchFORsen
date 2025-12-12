@@ -23,6 +23,7 @@ FLATTEN_CONTENT = False
 
 # Global flags
 NO_TOOL_ROLES = False
+REMOVE_NULL_TOOL_CALLS = False
 ENABLE_LOGGING = False
 
 # Global headers to merge from file
@@ -491,6 +492,32 @@ def replace_tool_roles_in_body(body: dict) -> dict:
     
     return modified_body
 
+def remove_null_tool_calls_in_body(body: dict) -> dict:
+    """
+    Remove "tool_calls" fields that are null in messages.
+    
+    Args:
+        body: The request body dictionary
+        
+    Returns:
+        Modified body with null tool_calls removed
+    """
+    if not isinstance(body, dict):
+        return body
+    
+    # Make a deep copy to avoid modifying the original
+    modified_body = copy.deepcopy(body)
+    
+    # Check if this looks like a chat completion request with messages
+    if "messages" in modified_body and isinstance(modified_body["messages"], list):
+        for message in modified_body["messages"]:
+            if isinstance(message, dict):
+                # Remove tool_calls if it is None (null)
+                if "tool_calls" in message and message["tool_calls"] is None:
+                    del message["tool_calls"]
+    
+    return modified_body
+
 async def save_request_to_file(path: str, method: str, headers: dict, body: dict):
     log_entry = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -504,7 +531,7 @@ async def save_request_to_file(path: str, method: str, headers: dict, body: dict
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, merge_headers: dict = None, token_request_config: dict = None):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, remove_null_tool_calls: bool = False, merge_headers: dict = None, token_request_config: dict = None):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -536,6 +563,10 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         # Apply tool role replacement if requested
         if no_tool_roles:
             body = replace_tool_roles_in_body(body)
+        
+        # Remove null tool_calls if requested
+        if remove_null_tool_calls:
+            body = remove_null_tool_calls_in_body(body)
         
         # Merge headers from file if provided
         if merge_headers:
@@ -697,6 +728,10 @@ async def proxy(full_path: str, request: Request):
     if NO_TOOL_ROLES:
         body_to_send = replace_tool_roles_in_body(body_to_send)
 
+    # Remove null tool_calls if enabled
+    if REMOVE_NULL_TOOL_CALLS:
+        body_to_send = remove_null_tool_calls_in_body(body_to_send)
+
     # Filter headers - only keep essential ones for OpenRouter API
     filtered_headers = {}
     essential_headers = {
@@ -764,6 +799,7 @@ Examples:
   %(prog)s server --target-url https://api.openai.com/v1/chat/completions
   %(prog)s server --flatten-content          # Start server with content flattening enabled
   %(prog)s server --no-tool-roles            # Start server with tool role replacement enabled
+  %(prog)s server --remove-null-tool-calls   # Start server with removal of null tool calls enabled
   %(prog)s server --log                      # Start server with request logging enabled
   %(prog)s server --merge-header headers.json # Start server with header merging from JSON file
   %(prog)s server --token-request token.json  # Start server with token request enabled
@@ -775,6 +811,7 @@ Examples:
   %(prog)s replay <log_file_path> --output json --target-url https://test-api.com
   %(prog)s replay <log_file_path> --flatten-content  # Replay with content flattening
   %(prog)s replay <log_file_path> --no-tool-roles    # Replay with tool role replacement
+  %(prog)s replay <log_file_path> --remove-null-tool-calls # Replay with removal of null tool calls
   %(prog)s --help                            # Show this help message
   %(prog)s server --help                     # Show server mode help
   %(prog)s replay --help                     # Show replay mode help
@@ -811,6 +848,7 @@ Server Mode Examples:
   python proxy.py server --target-url https://api.openai.com/v1/chat/completions
   python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
   python proxy.py server --no-tool-roles     # Enable tool role replacement
+  python proxy.py server --remove-null-tool-calls # Enable removal of null tool calls
   python proxy.py server --log               # Enable request logging
   python proxy.py server --merge-header headers.json  # Merge headers from JSON file
   python proxy.py server --token-request token.json   # Enable token request
@@ -851,6 +889,11 @@ Server Mode Examples:
         "--no-tool-roles", 
         action='store_true',
         help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
+    )
+    server_parser.add_argument(
+        "--remove-null-tool-calls", 
+        action='store_true',
+        help="Remove 'tool_calls': null fields from messages"
     )
     server_parser.add_argument(
         "--log", 
@@ -910,6 +953,7 @@ Replay Mode Examples:
   python proxy.py replay <log_file_path> --target-url https://test-api.com  # Override target URL
   python proxy.py replay <log_file_path> --flatten-content   # Enable content flattening during replay
   python proxy.py replay <log_file_path> --no-tool-roles     # Enable tool role replacement during replay
+  python proxy.py replay <log_file_path> --remove-null-tool-calls # Enable removal of null tool calls during replay
   python proxy.py replay <log_file_path> --merge-header headers.json  # Merge headers from JSON file during replay
   python proxy.py replay <log_file_path> --token-request token.json   # Enable token request during replay
   python proxy.py replay <log_file_path> --proxy-url http://proxy.company.com:8080  # Use corporate proxy during replay
@@ -950,6 +994,11 @@ Log files location: {LOG_DIR}
         "--no-tool-roles", 
         action='store_true',
         help="Replace 'tool-call' and 'tool-response' roles with 'user' in messages"
+    )
+    replay_parser.add_argument(
+        "--remove-null-tool-calls", 
+        action='store_true',
+        help="Remove 'tool_calls': null fields from messages"
     )
     replay_parser.add_argument(
         "--merge-header", 
@@ -1039,10 +1088,11 @@ Test Proxy Examples:
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, REMOVE_NULL_TOOL_CALLS, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
+    REMOVE_NULL_TOOL_CALLS = args.remove_null_tool_calls
     ENABLE_LOGGING = args.log
     
     # Load merge headers if specified
@@ -1118,6 +1168,7 @@ def run_server(args):
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
+    print(f"Remove null tool calls: {'enabled' if REMOVE_NULL_TOOL_CALLS else 'disabled'}")
     print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
     print(f"Header merging: {'enabled' if MERGE_HEADERS else 'disabled'}")
     print(f"Token request: {'enabled' if TOKEN_REQUEST_CONFIG else 'disabled'}")
@@ -1149,6 +1200,8 @@ async def run_replay(args):
         print("Content flattening: enabled")
     if args.no_tool_roles:
         print("Tool role replacement: enabled")
+    if args.remove_null_tool_calls:
+        print("Remove null tool calls: enabled")
     
     # Load merge headers if specified
     merge_headers = None
@@ -1226,7 +1279,7 @@ async def run_replay(args):
     
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, merge_headers, token_request_config)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, args.remove_null_tool_calls, merge_headers, token_request_config)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
