@@ -518,15 +518,35 @@ def remove_null_tool_calls_in_body(body: dict) -> dict:
     
     return modified_body
 
-async def save_request_to_file(path: str, method: str, headers: dict, body: dict):
+async def save_request_to_file(path: str, method: str, headers: dict, body: dict, request_id: str = None, timestamp: str = None):
+    if request_id is None:
+        request_id = uuid.uuid4().hex
+    if timestamp is None:
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        
     log_entry = {
         "timestamp": datetime.utcnow().isoformat(),
+        "request_id": request_id,
         "path": path,
         "method": method,
         "headers": dict(headers),
         "body": body
     }
-    filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}.json"
+    filename = f"{timestamp}_{request_id}_request.json"
+    filepath = os.path.join(LOG_DIR, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(log_entry, f, ensure_ascii=False, indent=2)
+    return request_id, timestamp
+
+async def save_response_to_file(request_id: str, timestamp: str, status_code: int, headers: dict, body: dict):
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "request_id": request_id,
+        "status_code": status_code,
+        "headers": dict(headers),
+        "body": body
+    }
+    filename = f"{timestamp}_{request_id}_response.json"
     filepath = os.path.join(LOG_DIR, filename)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
@@ -716,8 +736,11 @@ async def proxy(full_path: str, request: Request):
         incoming_headers = merge_headers_with_request(incoming_headers, MERGE_HEADERS)
 
     # Save request to file if logging is enabled
+    request_id = uuid.uuid4().hex
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    
     if ENABLE_LOGGING:
-        await save_request_to_file(full_path, request.method, incoming_headers, incoming_body)
+        await save_request_to_file(full_path, request.method, incoming_headers, incoming_body, request_id, timestamp)
 
     # Apply content flattening if enabled
     body_to_send = incoming_body
@@ -766,15 +789,29 @@ async def proxy(full_path: str, request: Request):
             error_msg = "Proxy authentication failed (407). Please check your proxy credentials."
             if PROXY_DEBUG:
                 error_msg += f" Details: {str(e)}"
-            return JSONResponse(status_code=407, content={"error": error_msg})
+            
+            error_content = {"error": error_msg}
+            if ENABLE_LOGGING:
+                await save_response_to_file(request_id, timestamp, 407, {}, error_content)
+                
+            return JSONResponse(status_code=407, content=error_content)
         else:
             error_msg = f"Proxy error: {str(e)}"
-            return JSONResponse(status_code=502, content={"error": error_msg})
+            error_content = {"error": error_msg}
+            if ENABLE_LOGGING:
+                await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+                
+            return JSONResponse(status_code=502, content=error_content)
     except httpx.RequestError as e:
         error_msg = f"Request error: {str(e)}"
         if PROXY_DEBUG:
             error_msg += f" (Proxy URL: {PROXY_URL})"
-        return JSONResponse(status_code=502, content={"error": error_msg})
+        
+        error_content = {"error": error_msg}
+        if ENABLE_LOGGING:
+            await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+            
+        return JSONResponse(status_code=502, content=error_content)
 
     try:
         response_json = response.json()
@@ -783,8 +820,12 @@ async def proxy(full_path: str, request: Request):
         response_json = {"error": "Invalid JSON response", "content": response.text}
 
     if response.status_code == 200:
+        if ENABLE_LOGGING:
+            await save_response_to_file(request_id, timestamp, 200, response.headers, response_json)
         return JSONResponse(status_code=200, content=response_json)
     else:
+        if ENABLE_LOGGING:
+            await save_response_to_file(request_id, timestamp, response.status_code, response.headers, response_json)
         return JSONResponse(status_code=response.status_code, content=response_json)
     
 def parse_arguments():
