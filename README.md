@@ -103,6 +103,12 @@ python proxy.py server --ssl-no-verify
 # Use custom SSL certificate file
 python proxy.py server --ssl-cert-file /path/to/Root_CA_V3.pem
 
+# Disable CORS (allows all origins, handles preflight requests)
+python proxy.py server --cors disable
+
+# Forward CORS preflight requests to the target address
+python proxy.py server --cors forward
+
 # With the executable
 ./dist/proxy server --host 0.0.0.0 --port 8000
 ```
@@ -307,6 +313,23 @@ python proxy.py replay log_file.json --proxy-url http://proxy.company.com:8080 -
 - Proxy settings are applied globally to all HTTP clients
 
 **Security Note:** Proxy credentials are passed as command-line arguments. In production environments, consider using environment variables or configuration files to avoid exposing credentials in process lists.
+
+### CORS Support
+
+The proxy provides built-in support for Cross-Origin Resource Sharing (CORS), which is essential when calling the proxy from a web browser.
+
+**Options:**
+- `--cors disable`: The proxy handles preflight (`OPTIONS`) requests automatically and adds headers to allow all origins, methods, and headers. This is the easiest way to solve CORS issues during development.
+- `--cors forward`: The proxy forwards all CORS-related requests (including `OPTIONS`) to the target address and forwards the CORS response headers back to the client. This allows the target server to control the CORS policy.
+
+**Usage:**
+```bash
+# Allow all origins (standard dev mode)
+python proxy.py server --cors disable
+
+# Forward CORS to target
+python proxy.py server --cors forward
+```
 
 ### SSL Certificate Management
 
