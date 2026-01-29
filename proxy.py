@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import asyncio
@@ -40,6 +41,9 @@ PROXY_DEBUG = False
 # Global SSL configuration
 SSL_VERIFY = True  # True, False, or path to PEM file
 SSL_CERT_FILE = None  # Path to custom certificate file
+
+# Global CORS configuration
+CORS_MODE = None
 
 def get_logs_directory():
     """Get the appropriate logs directory for the current OS"""
@@ -599,7 +603,8 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
             'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os',
             'x-stainless-arch', 'x-stainless-runtime', 'x-stainless-runtime-version',
             'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout',
-            'ocp-apim-subscription-key', 'trustnest-apim-subscription-key'
+            'ocp-apim-subscription-key', 'trustnest-apim-subscription-key',
+            'origin', 'access-control-request-method', 'access-control-request-headers'
         }
         
         for header_name, header_value in headers.items():
@@ -726,12 +731,17 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
             "file_path": filepath
         }
 
-@app.post("/{full_path:path}")
+@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"])
 async def proxy(full_path: str, request: Request):
-    try:
-        incoming_body = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+    # Read body for methods that typically have one
+    incoming_body = None
+    if request.method not in ["GET", "HEAD", "OPTIONS"]:
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                incoming_body = json.loads(body_bytes)
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
 
     incoming_headers = dict(request.headers)
 
@@ -766,7 +776,8 @@ async def proxy(full_path: str, request: Request):
         'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os',
         'x-stainless-arch', 'x-stainless-runtime', 'x-stainless-runtime-version',
         'x-stainless-async', 'x-stainless-retry-count', 'x-stainless-read-timeout',
-        'ocp-apim-subscription-key', 'trustnest-apim-subscription-key'
+        'ocp-apim-subscription-key', 'trustnest-apim-subscription-key',
+        'origin', 'access-control-request-method', 'access-control-request-headers'
     }
     
     for header_name, header_value in incoming_headers.items():
@@ -786,80 +797,104 @@ async def proxy(full_path: str, request: Request):
             return JSONResponse(status_code=500, content={"error": f"Token request failed: {str(e)}"})
 
     # Check if this is a streaming request
-    is_streaming = body_to_send.get('stream', False)
+    is_streaming = body_to_send.get('stream', False) if isinstance(body_to_send, dict) else False
     
     try:
         client = create_http_client(timeout=120.0)  # Longer timeout for streaming
         
         if is_streaming:
             # For streaming requests, we need to stream the response
-            async def stream_response():
-                try:
-                    async with client:
-                        async with client.stream('POST', TARGET_URL, json=body_to_send, headers=filtered_headers) as response:
-                            # Forward the status code and headers
-                            if response.status_code != 200:
-                                # For error responses, read the full content and return as JSON
-                                error_content = await response.aread()
-                                if ENABLE_LOGGING:
-                                    try:
-                                        error_json = json.loads(error_content)
-                                        await save_response_to_file(request_id, timestamp, response.status_code, response.headers, error_json)
-                                    except:
-                                        await save_response_to_file(request_id, timestamp, response.status_code, response.headers, error_content.decode('utf-8', errors='replace'))
-                                yield error_content
-                                return
-                            
-                            # Stream the response chunks as they arrive
-                            collected_chunks = []
-                            async for chunk in response.aiter_bytes():
-                                if chunk:
-                                    if ENABLE_LOGGING:
-                                        collected_chunks.append(chunk)
-                                    yield chunk
-                            
-                            # Save the complete streamed response if logging is enabled
-                            if ENABLE_LOGGING and collected_chunks:
-                                full_response = b''.join(collected_chunks).decode('utf-8', errors='replace')
-                                await save_response_to_file(request_id, timestamp, 200, response.headers, full_response)
-                                
-                except httpx.ProxyError as e:
-                    if "407" in str(e) or "Authentication Required" in str(e):
-                        error_msg = "Proxy authentication failed (407). Please check your proxy credentials."
-                        if PROXY_DEBUG:
-                            error_msg += f" Details: {str(e)}"
-                        error_content = {"error": error_msg}
-                    else:
-                        error_msg = f"Proxy error: {str(e)}"
-                        error_content = {"error": error_msg}
-                    
-                    if ENABLE_LOGGING:
-                        await save_response_to_file(request_id, timestamp, 502, {}, error_content)
-                    yield json.dumps(error_content).encode('utf-8')
-                    
-                except httpx.RequestError as e:
-                    error_msg = f"Request error: {str(e)}"
-                    if PROXY_DEBUG:
-                        error_msg += f" (Proxy URL: {PROXY_URL})"
-                    error_content = {"error": error_msg}
-                    
-                    if ENABLE_LOGGING:
-                        await save_response_to_file(request_id, timestamp, 502, {}, error_content)
-                    yield json.dumps(error_content).encode('utf-8')
-            
-            # Return streaming response with appropriate headers
-            return StreamingResponse(
-                stream_response(),
-                media_type="text/event-stream",
-                headers={
+            # We must get headers from the target before returning StreamingResponse
+            # to allow for CORS header forwarding.
+            await client.__aenter__()
+            try:
+                response_cm = client.stream(request.method, TARGET_URL, json=body_to_send, headers=filtered_headers)
+                response = await response_cm.__aenter__()
+
+                # Capture headers to forward
+                streaming_headers = {
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                 }
-            )
+                if CORS_MODE == 'forward':
+                    for h_name, h_value in response.headers.items():
+                        h_name_lc = h_name.lower()
+                        if h_name_lc.startswith("access-control-") or h_name_lc == 'vary':
+                            streaming_headers[h_name] = h_value
+
+                async def stream_response_wrapper(resp, cm, cl):
+                    try:
+                        # Forward the status code and headers
+                        if resp.status_code != 200:
+                            # For error responses, read the full content and return as JSON
+                            error_content = await resp.aread()
+                            if ENABLE_LOGGING:
+                                try:
+                                    error_json = json.loads(error_content)
+                                    await save_response_to_file(request_id, timestamp, resp.status_code, resp.headers, error_json)
+                                except:
+                                    await save_response_to_file(request_id, timestamp, resp.status_code, resp.headers, error_content.decode('utf-8', errors='replace'))
+                            yield error_content
+                            return
+
+                        # Stream the response chunks as they arrive
+                        collected_chunks = []
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                if ENABLE_LOGGING:
+                                    collected_chunks.append(chunk)
+                                yield chunk
+
+                        # Save the complete streamed response if logging is enabled
+                        if ENABLE_LOGGING and collected_chunks:
+                            full_response = b''.join(collected_chunks).decode('utf-8', errors='replace')
+                            await save_response_to_file(request_id, timestamp, 200, resp.headers, full_response)
+                                
+                    except httpx.ProxyError as e:
+                        if "407" in str(e) or "Authentication Required" in str(e):
+                            error_msg = "Proxy authentication failed (407). Please check your proxy credentials."
+                            if PROXY_DEBUG:
+                                error_msg += f" Details: {str(e)}"
+                            error_content = {"error": error_msg}
+                        else:
+                            error_msg = f"Proxy error: {str(e)}"
+                            error_content = {"error": error_msg}
+
+                        if ENABLE_LOGGING:
+                            await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+                        yield json.dumps(error_content).encode('utf-8')
+
+                    except httpx.RequestError as e:
+                        error_msg = f"Request error: {str(e)}"
+                        if PROXY_DEBUG:
+                            error_msg += f" (Proxy URL: {PROXY_URL})"
+                        error_content = {"error": error_msg}
+
+                        if ENABLE_LOGGING:
+                            await save_response_to_file(request_id, timestamp, 502, {}, error_content)
+                        yield json.dumps(error_content).encode('utf-8')
+                    except Exception as e:
+                        error_content = {"error": f"Streaming error: {str(e)}"}
+                        yield json.dumps(error_content).encode('utf-8')
+                    finally:
+                        await cm.__aexit__(None, None, None)
+                        await cl.__aexit__(None, None, None)
+
+                # Return streaming response with appropriate headers
+                return StreamingResponse(
+                    stream_response_wrapper(response, response_cm, client),
+                    status_code=response.status_code,
+                    media_type="text/event-stream",
+                    headers=streaming_headers
+                )
+            except Exception as e:
+                # Ensure client is closed if we fail before returning StreamingResponse
+                await client.__aexit__(None, None, None)
+                raise e
         else:
             # For non-streaming requests, use the original behavior
             async with client:
-                response = await client.post(TARGET_URL, json=body_to_send, headers=filtered_headers)
+                response = await client.request(request.method, TARGET_URL, json=body_to_send, headers=filtered_headers)
                 
     except httpx.ProxyError as e:
         if "407" in str(e) or "Authentication Required" in str(e):
@@ -904,14 +939,22 @@ async def proxy(full_path: str, request: Request):
             # If JSON parsing fails, return the raw text content
             response_content = response.text
 
+    # Forward CORS response headers if in forward mode
+    response_headers = {}
+    if CORS_MODE == 'forward':
+        for h_name, h_value in response.headers.items():
+            h_name_lc = h_name.lower()
+            if h_name_lc.startswith("access-control-") or h_name_lc == 'vary':
+                response_headers[h_name] = h_value
+
     if response.status_code == 200:
         if ENABLE_LOGGING:
             await save_response_to_file(request_id, timestamp, 200, response.headers, response_content)
-        return JSONResponse(status_code=200, content=response_content)
+        return JSONResponse(status_code=200, content=response_content, headers=response_headers)
     else:
         if ENABLE_LOGGING:
             await save_response_to_file(request_id, timestamp, response.status_code, response.headers, response_content)
-        return JSONResponse(status_code=response.status_code, content=response_content)
+        return JSONResponse(status_code=response.status_code, content=response_content, headers=response_headers)
     
 def parse_arguments():
     """Parse command line arguments"""
@@ -1066,6 +1109,13 @@ Server Mode Examples:
         help="Path to custom SSL certificate file (PEM format) for certificate verification. Useful for corporate environments with custom CA certificates. Example: --ssl-cert-file /path/to/Root_CA_V3.pem",
         metavar='PEM_FILE'
     )
+    server_parser.add_argument(
+        "--cors",
+        type=str,
+        choices=['disable', 'forward'],
+        help="CORS support: 'disable' to allow all origins (replies to preflight), 'forward' to forward CORS requests to the target address",
+        metavar='MODE'
+    )
     
     # Replay mode
     replay_parser = subparsers.add_parser(
@@ -1214,7 +1264,7 @@ Test Proxy Examples:
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, REMOVE_NULL_TOOL_CALLS, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, REMOVE_NULL_TOOL_CALLS, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE, CORS_MODE
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
@@ -1290,6 +1340,21 @@ def run_server(args):
         SSL_VERIFY = env_ssl_verify
         SSL_CERT_FILE = env_ssl_cert_file
     
+    # Configure CORS settings
+    if hasattr(args, 'cors') and args.cors:
+        CORS_MODE = args.cors
+        if CORS_MODE == 'disable':
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+            print("CORS mode: disabled (allowing all origins)")
+        elif CORS_MODE == 'forward':
+            print("CORS mode: forward (forwarding preflight requests to target)")
+
     print(f"Starting proxy server...")
     print(f"Target URL: {TARGET_URL}")
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
