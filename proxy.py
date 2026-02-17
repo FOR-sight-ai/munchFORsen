@@ -25,6 +25,7 @@ FLATTEN_CONTENT = False
 # Global flags
 NO_TOOL_ROLES = False
 REMOVE_NULL_TOOL_CALLS = False
+REMOVE_OPTIONS = False
 ENABLE_LOGGING = False
 
 # Global headers to merge from file
@@ -522,6 +523,31 @@ def remove_null_tool_calls_in_body(body: dict) -> dict:
     
     return modified_body
 
+def remove_options_in_body(body: dict) -> dict:
+    """
+    Remove "tool_calls" fields that are null in messages.
+    
+    Args:
+        body: The request body dictionary
+        
+    Returns:
+        Modified body with null tool_calls removed
+    """
+    if not isinstance(body, dict):
+        return body
+    
+    # Make a deep copy to avoid modifying the original
+    modified_body = copy.deepcopy(body)
+    
+    # Check if this looks like a chat completion request with messages
+    if "options" in modified_body:
+        del modified_body["options"]
+
+    if "stream_options" in modified_body:
+        del modified_body["stream_options"]
+    
+    return modified_body
+
 async def save_request_to_file(path: str, method: str, headers: dict, body: dict, request_id: str = None, timestamp: str = None):
     if request_id is None:
         request_id = uuid.uuid4().hex
@@ -555,7 +581,7 @@ async def save_response_to_file(request_id: str, timestamp: str, status_code: in
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(log_entry, f, ensure_ascii=False, indent=2)
 
-async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, remove_null_tool_calls: bool = False, merge_headers: dict = None, token_request_config: dict = None):
+async def replay_request_from_file(filepath: str, target_url: str = None, flatten_content: bool = False, no_tool_roles: bool = False, remove_null_tool_calls: bool = False, merge_headers: dict = None, token_request_config: dict = None, remove_options: bool = False):
     """Replay a request from a saved log file and return detailed results"""
     try:
         # Check if file exists
@@ -591,6 +617,9 @@ async def replay_request_from_file(filepath: str, target_url: str = None, flatte
         # Remove null tool_calls if requested
         if remove_null_tool_calls:
             body = remove_null_tool_calls_in_body(body)
+
+        if remove_options:
+            body = remove_options_in_body(body)
         
         # Merge headers from file if provided
         if merge_headers:
@@ -768,6 +797,9 @@ async def proxy(full_path: str, request: Request):
     # Remove null tool_calls if enabled
     if REMOVE_NULL_TOOL_CALLS:
         body_to_send = remove_null_tool_calls_in_body(body_to_send)
+
+    if REMOVE_OPTIONS:
+        body_to_send = remove_options_in_body(body_to_send)
 
     # Filter headers - only keep essential ones for OpenRouter API
     filtered_headers = {}
@@ -1018,6 +1050,7 @@ Server Mode Examples:
   python proxy.py server --flatten-content   # Enable content flattening for single-text arrays
   python proxy.py server --no-tool-roles     # Enable tool role replacement
   python proxy.py server --remove-null-tool-calls # Enable removal of null tool calls
+  python proxy.py server --remove-options    # Enable removal of options fields
   python proxy.py server --log               # Enable request logging
   python proxy.py server --merge-header headers.json  # Merge headers from JSON file
   python proxy.py server --token-request token.json   # Enable token request
@@ -1063,6 +1096,11 @@ Server Mode Examples:
         "--remove-null-tool-calls", 
         action='store_true',
         help="Remove 'tool_calls': null fields from messages"
+    )
+    server_parser.add_argument(
+        "--remove-options", 
+        action='store_true',
+        help="Remove 'options' and 'stream_options' fields from messages"
     )
     server_parser.add_argument(
         "--log", 
@@ -1177,6 +1215,11 @@ Log files location: {LOG_DIR}
         help="Remove 'tool_calls': null fields from messages"
     )
     replay_parser.add_argument(
+        "--remove-options", 
+        action='store_true',
+        help="Remove 'options' and 'stream_options' fields from messages"
+    )
+    replay_parser.add_argument(
         "--merge-header", 
         type=str,
         help="Path to JSON file containing headers to merge with the replayed request. Headers from file will replace existing headers if they have the same name (case-insensitive). Example: --merge-header headers.json",
@@ -1264,11 +1307,12 @@ Test Proxy Examples:
 
 def run_server(args):
     """Run the proxy server"""
-    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, REMOVE_NULL_TOOL_CALLS, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE, CORS_MODE
+    global TARGET_URL, FLATTEN_CONTENT, NO_TOOL_ROLES, REMOVE_NULL_TOOL_CALLS, ENABLE_LOGGING, MERGE_HEADERS, TOKEN_REQUEST_CONFIG, PROXY_URL, PROXY_AUTH, PROXY_DEBUG, SSL_VERIFY, SSL_CERT_FILE, CORS_MODE, REMOVE_OPTIONS
     TARGET_URL = args.target_url
     FLATTEN_CONTENT = args.flatten_content
     NO_TOOL_ROLES = args.no_tool_roles
     REMOVE_NULL_TOOL_CALLS = args.remove_null_tool_calls
+    REMOVE_OPTIONS = args.remove_options
     ENABLE_LOGGING = args.log
     
     # Load merge headers if specified
@@ -1360,6 +1404,7 @@ def run_server(args):
     print(f"Content flattening: {'enabled' if FLATTEN_CONTENT else 'disabled'}")
     print(f"Tool role replacement: {'enabled' if NO_TOOL_ROLES else 'disabled'}")
     print(f"Remove null tool calls: {'enabled' if REMOVE_NULL_TOOL_CALLS else 'disabled'}")
+    print(f"Remove options: {'enabled' if REMOVE_OPTIONS else 'disabled'}")
     print(f"Request logging: {'enabled' if ENABLE_LOGGING else 'disabled'}")
     print(f"Header merging: {'enabled' if MERGE_HEADERS else 'disabled'}")
     print(f"Token request: {'enabled' if TOKEN_REQUEST_CONFIG else 'disabled'}")
@@ -1393,6 +1438,8 @@ async def run_replay(args):
         print("Tool role replacement: enabled")
     if args.remove_null_tool_calls:
         print("Remove null tool calls: enabled")
+    if args.remove_options:
+        print("Remove options: enabled")
     
     # Load merge headers if specified
     merge_headers = None
@@ -1470,7 +1517,7 @@ async def run_replay(args):
     
     print("-" * 50)
     
-    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, args.remove_null_tool_calls, merge_headers, token_request_config)
+    result = await replay_request_from_file(args.file, args.target_url, args.flatten_content, args.no_tool_roles, args.remove_null_tool_calls, merge_headers, token_request_config, args.remove_options)
     
     if args.output == 'json':
         print(json.dumps(result, indent=2, ensure_ascii=False))
